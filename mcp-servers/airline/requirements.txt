@@ -1,0 +1,12 @@
+# Airline MCP Server Dependencies
+# ZTA Testbed Component
+
+# MCP SDK
+mcp>=1.0.0
+
+# HTTP client for backend service calls
+httpx>=0.28.0
+
+# For SSE transport
+uvicorn>=0.34.0
+starlette>=0.45.0
