@@ -1,0 +1,14 @@
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-mcp-adapters>=0.1.0
+langchain-core>=0.3.0
+mcp>=1.0.0
+
+# LLM Providers (install what you're using)
+langchain-ollama>=0.1.0      # If using Ollama
+langchain-groq>=0.2.0        # If using Groq
+langchain-anthropic>=0.3.0   # If using Anthropic
+langchain-openai>=0.3.0      # If using OpenAI
+
+# For structured output
+pydantic>=2.0.0
