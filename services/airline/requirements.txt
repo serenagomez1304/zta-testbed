@@ -1,23 +1,7 @@
-# Airline Service Dependencies
-# ZTA Testbed Component
-
-# Web framework
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-pydantic==2.10.4
-
-# Database
-sqlalchemy==2.0.36
-
-# OpenTelemetry - Distributed Tracing & Metrics
-opentelemetry-api==1.29.0
-opentelemetry-sdk==1.29.0
-opentelemetry-instrumentation-fastapi==0.50b0
-opentelemetry-exporter-otlp==1.29.0
-
-# HTTP client (for health checks and testing)
-httpx==0.28.1
-
-# Additional utilities
-python-multipart==0.0.20
-python-dotenv==1.0.1
+fastapi>=0.100.0
+uvicorn>=0.23.0
+sqlalchemy>=2.0.0
+httpx>=0.25.0
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi

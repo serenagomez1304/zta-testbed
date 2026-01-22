@@ -1,0 +1,160 @@
+services:
+  # ============================================================================
+  # Backend Services
+  # ============================================================================
+  
+  airline-service:
+    build:
+      context: ./services/airline
+      dockerfile: Dockerfile
+    container_name: airline-service
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+    networks:
+      - zta-testbed
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  hotel-service:
+    build:
+      context: ./services/hotel
+      dockerfile: Dockerfile
+    container_name: hotel-service
+    ports:
+      - "8002:8002"
+    environment:
+      - PORT=8002
+    networks:
+      - zta-testbed
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  car-rental-service:
+    build:
+      context: ./services/car-rental
+      dockerfile: Dockerfile
+    container_name: car-rental-service
+    ports:
+      - "8003:8003"
+    environment:
+      - PORT=8003
+    networks:
+      - zta-testbed
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ============================================================================
+  # Agent Services
+  # ============================================================================
+
+  airline-agent:
+    build:
+      context: .
+      dockerfile: agents/agent-service/Dockerfile
+    container_name: airline-agent
+    ports:
+      - "5001:5001"
+    environment:
+      - AGENT_TYPE=airline
+      - PORT=5001
+      - AIRLINE_SERVICE_URL=http://airline-service:8001
+      - USE_OLLAMA=true
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    networks:
+      - zta-testbed
+    depends_on:
+      - airline-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  hotel-agent:
+    build:
+      context: .
+      dockerfile: agents/agent-service/Dockerfile
+    container_name: hotel-agent
+    ports:
+      - "5002:5002"
+    environment:
+      - AGENT_TYPE=hotel
+      - PORT=5002
+      - HOTEL_SERVICE_URL=http://hotel-service:8002
+      - USE_OLLAMA=true
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    networks:
+      - zta-testbed
+    depends_on:
+      - hotel-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  car-agent:
+    build:
+      context: .
+      dockerfile: agents/agent-service/Dockerfile
+    container_name: car-agent
+    ports:
+      - "5003:5003"
+    environment:
+      - AGENT_TYPE=car_rental
+      - PORT=5003
+      - CAR_RENTAL_SERVICE_URL=http://car-rental-service:8003
+      - USE_OLLAMA=true
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+    networks:
+      - zta-testbed
+    depends_on:
+      - car-rental-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Supervisor Service
+  # ============================================================================
+
+  supervisor:
+    build:
+      context: .
+      dockerfile: agents/supervisor-service/Dockerfile
+    container_name: supervisor
+    ports:
+      - "5100:5000"  # ← Change this line (was "5000:5000")
+    environment:
+      - PORT=5000
+      - AIRLINE_AGENT_URL=http://airline-agent:5001
+      - HOTEL_AGENT_URL=http://hotel-agent:5002
+      - CAR_AGENT_URL=http://car-agent:5003
+    networks:
+      - zta-testbed
+    depends_on:
+      - airline-agent
+      - hotel-agent
+      - car-agent
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  zta-testbed:
+    driver: bridge

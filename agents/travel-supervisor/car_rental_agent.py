@@ -30,8 +30,7 @@ class CarRentalAgent:
         if not server_path.exists():
             server_path = base_dir / "mcp-servers" / "car-rental" / "server.py"
         
-        if not server_path.exists():
-            raise FileNotFoundError(f"Car rental MCP server not found at {server_path}")
+        server_path = "/app/mcp-servers/car-rental/server.py"
         
         car_server = {
             "car_rental": {

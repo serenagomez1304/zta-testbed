@@ -63,7 +63,8 @@ class AirlineAgent:
         if not server_path.exists():
             server_path = base_dir / "mcp-servers" / "airline" / "server.py"
         
-        server_path = "/app/mcp-servers/airline/server.py"
+        if not server_path.exists():
+            raise FileNotFoundError(f"Airline MCP server not found at {server_path}")
         
         # Server configuration (ONLY airline)
         airline_server = {

@@ -31,7 +31,8 @@ class HotelAgent:
         if not server_path.exists():
             server_path = base_dir / "mcp-servers" / "hotel" / "server.py"
         
-        server_path = "/app/mcp-servers/hotel/server.py"
+        if not server_path.exists():
+            raise FileNotFoundError(f"Hotel MCP server not found at {server_path}")
         
         hotel_server = {
             "hotel": {
