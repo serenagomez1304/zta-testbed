@@ -383,4 +383,5 @@ if __name__ == "__main__":
         logger.info(f"Running with streamable-http transport on port {port}")
         mcp.settings.port = port
         mcp.settings.host = "0.0.0.0"
+        mcp.settings.transport_security = False  # Disable host validation
         mcp.run(transport="streamable-http")
