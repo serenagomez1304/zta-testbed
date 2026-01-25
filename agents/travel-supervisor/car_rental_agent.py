@@ -23,30 +23,43 @@ class CarRentalAgent:
         
     async def initialize(self):
         """Initialize MCP connection"""
-        base_dir = Path(__file__).parent.parent.parent.resolve()
         
-        # Try both naming patterns
-        server_path = base_dir / "mcp-servers" / "car-rental-mcp" / "server.py"
-        if not server_path.exists():
-            server_path = base_dir / "mcp-servers" / "car-rental" / "server.py"
+        # Check if we should use HTTP (for Docker/K8s) or stdio (local dev)
+        use_http = os.getenv("MCP_TRANSPORT", "stdio") == "http"
         
-        server_path = "/app/mcp-servers/car-rental/server.py"
-        
-        car_server = {
-            "car_rental": {
-                "command": "python",
-                "args": [str(server_path), "stdio"],
-                "transport": "stdio",
-                "env": {
-                    "CAR_RENTAL_SERVICE_URL": os.getenv(
-                        "CAR_RENTAL_SERVICE_URL", 
-                        "http://localhost:8003"
-                    )
+        if use_http:
+            # HTTP transport for Docker/K8s
+            mcp_url = os.getenv("CAR_RENTAL_MCP_URL", "http://localhost:8012")
+            print(f"🚗 Connecting to car rental MCP server via HTTP: {mcp_url}")
+            
+            car_server = {
+                "car_rental": {
+                    "url": f"{mcp_url}/mcp",
+                    "transport": "streamable_http"
                 }
             }
-        }
-        
-        print(f"🚗 Connecting to car rental MCP server: {server_path}")
+        else:
+            # Stdio transport for local dev
+            base_dir = Path(__file__).parent.parent.parent.resolve()
+            server_path = base_dir / "mcp-servers" / "car-rental-mcp" / "server.py"
+            if not server_path.exists():
+                server_path = base_dir / "mcp-servers" / "car-rental" / "server.py"
+            
+            print(f"🚗 Connecting to car rental MCP server via stdio: {server_path}")
+            
+            car_server = {
+                "car_rental": {
+                    "command": "python",
+                    "args": [str(server_path), "stdio"],
+                    "transport": "stdio",
+                    "env": {
+                        "CAR_RENTAL_SERVICE_URL": os.getenv(
+                            "CAR_RENTAL_SERVICE_URL", 
+                            "http://localhost:8003"
+                        )
+                    }
+                }
+            }
         
         self.client = MultiServerMCPClient(car_server)
         self.tools = await self.client.get_tools()

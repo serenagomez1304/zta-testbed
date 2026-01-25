@@ -381,4 +381,6 @@ if __name__ == "__main__":
     else:
         # Run with streamable HTTP transport (for network access)
         logger.info(f"Running with streamable-http transport on port {port}")
+        mcp.settings.port = port
+        mcp.settings.host = "0.0.0.0"
         mcp.run(transport="streamable-http")

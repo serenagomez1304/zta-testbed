@@ -2,9 +2,6 @@ FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install curl for healthcheck
-RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
-
 # Copy requirements first for caching
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
@@ -13,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Expose port
-EXPOSE 8003
+EXPOSE 8011
 
-# Run the service
-CMD ["python", "app.py"]
+# Run in HTTP mode (no "stdio" argument)
+CMD ["python", "server.py"]

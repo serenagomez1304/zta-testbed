@@ -1,160 +1,145 @@
+version: '3.8'
+
 services:
-  # ============================================================================
-  # Backend Services
-  # ============================================================================
+  # =============================================================================
+  # Backend Services (FastAPI + SQLite)
+  # =============================================================================
   
   airline-service:
     build:
       context: ./services/airline
       dockerfile: Dockerfile
-    container_name: airline-service
     ports:
       - "8001:8001"
     environment:
       - PORT=8001
-    networks:
-      - zta-testbed
+      - OTEL_SERVICE_NAME=airline-service
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - zta-network
 
   hotel-service:
     build:
       context: ./services/hotel
       dockerfile: Dockerfile
-    container_name: hotel-service
     ports:
       - "8002:8002"
     environment:
       - PORT=8002
-    networks:
-      - zta-testbed
+      - OTEL_SERVICE_NAME=hotel-service
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - zta-network
 
   car-rental-service:
     build:
       context: ./services/car-rental
       dockerfile: Dockerfile
-    container_name: car-rental-service
     ports:
       - "8003:8003"
     environment:
       - PORT=8003
-    networks:
-      - zta-testbed
+      - OTEL_SERVICE_NAME=car-rental-service
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+    networks:
+      - zta-network
 
-  # ============================================================================
-  # Agent Services
-  # ============================================================================
-
-  airline-agent:
+  # =============================================================================
+  # MCP Servers (FastMCP with HTTP transport)
+  # =============================================================================
+  
+  airline-mcp:
     build:
-      context: .
-      dockerfile: agents/agent-service/Dockerfile
-    container_name: airline-agent
+      context: ./mcp-servers/airline
+      dockerfile: Dockerfile
     ports:
-      - "5001:5001"
+      - "8010:8010"
     environment:
-      - AGENT_TYPE=airline
-      - PORT=5001
+      - PORT=8010
       - AIRLINE_SERVICE_URL=http://airline-service:8001
-      - USE_OLLAMA=true
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-    networks:
-      - zta-testbed
+      - OTEL_SERVICE_NAME=airline-mcp
+      - FASTMCP_ALLOWED_HOSTS=*
     depends_on:
-      - airline-service
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5001/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      airline-service:
+        condition: service_healthy
+    networks:
+      - zta-network
 
-  hotel-agent:
+  hotel-mcp:
     build:
-      context: .
-      dockerfile: agents/agent-service/Dockerfile
-    container_name: hotel-agent
+      context: ./mcp-servers/hotel
+      dockerfile: Dockerfile
     ports:
-      - "5002:5002"
+      - "8011:8011"
     environment:
-      - AGENT_TYPE=hotel
-      - PORT=5002
+      - PORT=8011
       - HOTEL_SERVICE_URL=http://hotel-service:8002
-      - USE_OLLAMA=true
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-    networks:
-      - zta-testbed
+      - OTEL_SERVICE_NAME=hotel-mcp
+      - FASTMCP_ALLOWED_HOSTS=*
     depends_on:
-      - hotel-service
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5002/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      hotel-service:
+        condition: service_healthy
+    networks:
+      - zta-network
 
-  car-agent:
+  car-rental-mcp:
     build:
-      context: .
-      dockerfile: agents/agent-service/Dockerfile
-    container_name: car-agent
+      context: ./mcp-servers/car-rental
+      dockerfile: Dockerfile
     ports:
-      - "5003:5003"
+      - "8012:8012"
     environment:
-      - AGENT_TYPE=car_rental
-      - PORT=5003
+      - PORT=8012
       - CAR_RENTAL_SERVICE_URL=http://car-rental-service:8003
-      - USE_OLLAMA=true
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-    networks:
-      - zta-testbed
+      - OTEL_SERVICE_NAME=car-rental-mcp
+      - FASTMCP_ALLOWED_HOSTS=*
     depends_on:
-      - car-rental-service
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5003/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      car-rental-service:
+        condition: service_healthy
+    networks:
+      - zta-network
 
-  # ============================================================================
-  # Supervisor Service
-  # ============================================================================
-
-  supervisor:
+  # =============================================================================
+  # Supervisor Agent (orchestrates worker agents)
+  # =============================================================================
+  
+  travel-supervisor:
     build:
-      context: .
-      dockerfile: agents/supervisor-service/Dockerfile
-    container_name: supervisor
+      context: ./agents/travel-supervisor
+      dockerfile: Dockerfile
     ports:
-      - "5100:5000"  # ← Change this line (was "5000:5000")
+      - "8080:8080"
     environment:
-      - PORT=5000
-      - AIRLINE_AGENT_URL=http://airline-agent:5001
-      - HOTEL_AGENT_URL=http://hotel-agent:5002
-      - CAR_AGENT_URL=http://car-agent:5003
-    networks:
-      - zta-testbed
+      - MCP_TRANSPORT=http
+      - AIRLINE_MCP_URL=http://airline-mcp:8010
+      - HOTEL_MCP_URL=http://hotel-mcp:8011
+      - CAR_RENTAL_MCP_URL=http://car-rental-mcp:8012
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-zta-testbed}
+      - OTEL_SERVICE_NAME=travel-supervisor
     depends_on:
-      - airline-agent
-      - hotel-agent
-      - car-agent
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:5000"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      - airline-mcp
+      - hotel-mcp
+      - car-rental-mcp
+    networks:
+      - zta-network
 
 networks:
-  zta-testbed:
+  zta-network:
     driver: bridge

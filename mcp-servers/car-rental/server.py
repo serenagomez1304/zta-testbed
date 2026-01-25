@@ -438,4 +438,6 @@ if __name__ == "__main__":
         mcp.run(transport="stdio")
     else:
         logger.info(f"Running with streamable-http transport")
+        mcp.settings.port = port
+        mcp.settings.host = "0.0.0.0"
         mcp.run(transport="streamable-http")

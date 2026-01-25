@@ -1,3 +1,6 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 """
 Airline Agent - Only has access to airline MCP tools
 This isolation is the foundation for ZTA policy enforcement
@@ -55,34 +58,42 @@ class AirlineAgent:
     async def initialize(self):
         """Initialize MCP connection and build graph"""
         
-        # Find the airline MCP server
-        base_dir = Path(__file__).parent.parent.parent.resolve()
+        # Check if we should use HTTP (for Docker/K8s) or stdio (local dev)
+        use_http = os.getenv("MCP_TRANSPORT", "stdio") == "http"
         
-        # Try both naming patterns (airline-mcp and airline)
-        server_path = base_dir / "mcp-servers" / "airline-mcp" / "server.py"
-        if not server_path.exists():
-            server_path = base_dir / "mcp-servers" / "airline" / "server.py"
-        
-        server_path = "/app/mcp-servers/airline/server.py"
-        
-        # Server configuration (ONLY airline)
-        airline_server = {
-            "airline": {
-                "command": "python",
-                "args": [str(server_path), "stdio"],
-                "transport": "stdio",
-                "env": {
-                    "AIRLINE_SERVICE_URL": os.getenv(
-                        "AIRLINE_SERVICE_URL", 
-                        "http://localhost:8001"
-                    )
+        if use_http:
+            # HTTP transport for Docker/K8s
+            mcp_url = os.getenv("AIRLINE_MCP_URL", "http://localhost:8010")
+            print(f"✈️  Connecting to airline MCP server via HTTP: {mcp_url}")
+            
+            airline_server = {
+                "airline": {
+                    "url": f"{mcp_url}/mcp",
+                    "transport": "streamable_http"
                 }
             }
-        }
+        else:
+            # Stdio transport for local dev
+            base_dir = Path(__file__).parent.parent.parent.resolve()
+            server_path = base_dir / "mcp-servers" / "airline" / "server.py"
+            
+            print(f"✈️  Connecting to airline MCP server via stdio: {server_path}")
+            
+            airline_server = {
+                "airline": {
+                    "command": "python",
+                    "args": [str(server_path), "stdio"],
+                    "transport": "stdio",
+                    "env": {
+                        "AIRLINE_SERVICE_URL": os.getenv(
+                            "AIRLINE_SERVICE_URL", 
+                            "http://localhost:8001"
+                        )
+                    }
+                }
+            }
         
-        print(f"✈️  Connecting to airline MCP server: {server_path}")
-        
-        # Create MCP client (no context manager - same as your working agent)
+        # Create MCP client
         self.client = MultiServerMCPClient(airline_server)
         
         # Get tools

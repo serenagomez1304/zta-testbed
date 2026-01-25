@@ -24,30 +24,43 @@ class HotelAgent:
         
     async def initialize(self):
         """Initialize MCP connection"""
-        base_dir = Path(__file__).parent.parent.parent.resolve()
         
-        # Try both naming patterns
-        server_path = base_dir / "mcp-servers" / "hotel-mcp" / "server.py"
-        if not server_path.exists():
-            server_path = base_dir / "mcp-servers" / "hotel" / "server.py"
+        # Check if we should use HTTP (for Docker/K8s) or stdio (local dev)
+        use_http = os.getenv("MCP_TRANSPORT", "stdio") == "http"
         
-        server_path = "/app/mcp-servers/hotel/server.py"
-        
-        hotel_server = {
-            "hotel": {
-                "command": "python",
-                "args": [str(server_path), "stdio"],
-                "transport": "stdio",
-                "env": {
-                    "HOTEL_SERVICE_URL": os.getenv(
-                        "HOTEL_SERVICE_URL", 
-                        "http://localhost:8002"
-                    )
+        if use_http:
+            # HTTP transport for Docker/K8s
+            mcp_url = os.getenv("HOTEL_MCP_URL", "http://localhost:8011")
+            print(f"🏨 Connecting to hotel MCP server via HTTP: {mcp_url}")
+            
+            hotel_server = {
+                "hotel": {
+                    "url": f"{mcp_url}/mcp",
+                    "transport": "streamable_http"
                 }
             }
-        }
-        
-        print(f"🏨 Connecting to hotel MCP server: {server_path}")
+        else:
+            # Stdio transport for local dev
+            base_dir = Path(__file__).parent.parent.parent.resolve()
+            server_path = base_dir / "mcp-servers" / "hotel-mcp" / "server.py"
+            if not server_path.exists():
+                server_path = base_dir / "mcp-servers" / "hotel" / "server.py"
+            
+            print(f"🏨 Connecting to hotel MCP server via stdio: {server_path}")
+            
+            hotel_server = {
+                "hotel": {
+                    "command": "python",
+                    "args": [str(server_path), "stdio"],
+                    "transport": "stdio",
+                    "env": {
+                        "HOTEL_SERVICE_URL": os.getenv(
+                            "HOTEL_SERVICE_URL", 
+                            "http://localhost:8002"
+                        )
+                    }
+                }
+            }
         
         self.client = MultiServerMCPClient(hotel_server)
         self.tools = await self.client.get_tools()
