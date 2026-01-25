@@ -1,197 +1,392 @@
-# Airline Reservation Service
+# ZTA Multi-Agent Testbed
 
-**ZTA Testbed Component** - Mock airline booking backend for zero-trust architecture testing.
+A Zero-Trust Architecture (ZTA) testbed implementing a multi-agent travel booking system using the **Supervisor-Worker** pattern with **Model Context Protocol (MCP)** for secure inter-agent communication.
 
-## Overview
+## 🏗️ Architecture
 
-This service simulates an airline reservation system with:
-- Flight search and booking capabilities
-- OpenTelemetry instrumentation for distributed tracing
-- Chaos engineering hooks for resilience testing
-- Kubernetes-ready with health probes and HPA
+The system now supports **two deployment modes**:
 
-## Quick Start
+### Monolithic Mode (Original)
+All agents run in a single supervisor container with in-process function calls.
 
-### Local Development
-
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the service
-python app.py
-
-# Or with uvicorn directly
-uvicorn app:app --host 0.0.0.0 --port 8001 --reload
+```
+docker-compose up --build
 ```
 
-### Docker
+### Microservices Mode (New - ZTA Ready)
+Each agent runs as a separate container with HTTP-based communication, enabling Zero-Trust policy enforcement between services.
 
-```bash
-# Build the image
-docker build -t zta-testbed/airline-service:1.0.0 .
-
-# Run the container
-docker run -p 8001:8001 zta-testbed/airline-service:1.0.0
-
-# Run with chaos engineering enabled
-docker run -p 8001:8001 \
-  -e CHAOS_ENABLED=true \
-  -e CHAOS_LATENCY_MS=100 \
-  -e CHAOS_FAILURE_RATE=0.1 \
-  zta-testbed/airline-service:1.0.0
+```
+docker-compose -f docker-compose.microservices.yml up --build
 ```
 
-### Kubernetes
-
-```bash
-# Deploy to cluster
-kubectl apply -f k8s/deployment.yaml
-
-# Check status
-kubectl get pods -n zta-testbed -l app=airline-service
-
-# Port forward for local testing
-kubectl port-forward -n zta-testbed svc/airline-service 8001:80
+```
+                         ┌─────────────────────────────────┐
+                         │        SUPERVISOR               │
+                         │      (Orchestrator)             │
+                         │          :8080                  │
+                         └───────────────┬─────────────────┘
+                                         │ HTTP
+             ┌───────────────────────────┼───────────────────────┐
+             │                           │                       │
+             ▼                           ▼                       ▼
+     ┌───────────────┐           ┌───────────────┐       ┌───────────────┐
+     │ Airline Agent │           │  Hotel Agent  │       │Car Rental Agent│
+     │    :8091      │           │    :8092      │       │    :8093       │
+     └───────┬───────┘           └───────┬───────┘       └───────┬───────┘
+             │ HTTP                      │ HTTP                  │ HTTP
+             ▼                           ▼                       ▼
+     ┌───────────────┐           ┌───────────────┐       ┌───────────────┐
+     │  Airline MCP  │           │   Hotel MCP   │       │ Car Rental MCP│
+     │    :8010      │           │    :8011      │       │    :8012      │
+     └───────┬───────┘           └───────┬───────┘       └───────┬───────┘
+             │ HTTP                      │ HTTP                  │ HTTP
+             ▼                           ▼                       ▼
+     ┌───────────────┐           ┌───────────────┐       ┌───────────────┐
+     │Airline Service│           │ Hotel Service │       │Car Rental Svc │
+     │    :8001      │           │    :8002      │       │    :8003      │
+     │   (SQLite)    │           │   (SQLite)    │       │   (SQLite)    │
+     └───────────────┘           └───────────────┘       └───────────────┘
 ```
 
-## API Endpoints
+## ✨ Features
 
-### Health & Readiness
+- **Supervisor-Worker Pattern**: Central orchestrator routes requests to specialized domain agents
+- **MCP Protocol**: Standardized tool exposure via Model Context Protocol
+- **Microservices Architecture**: Each agent as a separate container for ZTA enforcement
+- **HTTP Transport**: All inter-service communication over HTTP for policy interception
+- **OpenTelemetry**: Distributed tracing across all 10 services
+- **Identity Headers**: ZTA-ready identity propagation (`x-agent-id`, `x-supervisor-id`)
+- **Docker Ready**: Full containerization with health checks
+- **Kubernetes Ready**: Architecture designed for service mesh deployment
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Detailed health check |
-| `/ready` | GET | Kubernetes readiness probe |
-| `/live` | GET | Kubernetes liveness probe |
+## 🚀 Quick Start
 
-### Flights
+### Prerequisites
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/flights/search` | POST | Search available flights |
-| `/api/v1/airports` | GET | List supported airports |
-| `/api/v1/airlines` | GET | List airlines |
+- Docker & Docker Compose (v2.20+)
+- API key for one of: Anthropic, OpenAI, or Groq
 
-### Bookings
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/v1/bookings` | POST | Create new booking |
-| `/api/v1/bookings/{id}` | GET | Get booking by ID |
-| `/api/v1/bookings/pnr/{pnr}` | GET | Get booking by PNR |
-| `/api/v1/bookings/{id}` | DELETE | Cancel booking |
-
-### Chaos Engineering
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/chaos/enable` | POST | Enable chaos mode |
-| `/chaos/disable` | POST | Disable chaos mode |
-| `/chaos/status` | GET | Get chaos status |
-
-## Example Requests
-
-### Search Flights
+### 1. Clone the Repository
 
 ```bash
-curl -X POST http://localhost:8001/api/v1/flights/search \
+git clone https://github.com/serenagomez1304/zta-testbed.git
+cd zta-testbed
+```
+
+### 2. Configure Environment
+
+```bash
+cp .env.example .env
+# Edit .env and add your API key(s)
+```
+
+**Required:** At least one LLM API key:
+```env
+ANTHROPIC_API_KEY=sk-ant-xxxxx
+# or
+OPENAI_API_KEY=sk-xxxxx
+# or
+GROQ_API_KEY=gsk_xxxxx
+```
+
+**Optional:** LangSmith tracing:
+```env
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=lsv2_xxxxx
+LANGCHAIN_PROJECT=zta-testbed
+```
+
+### 3. Start with Docker Compose
+
+**Monolithic mode (7 containers):**
+```bash
+docker-compose up --build
+```
+
+**Microservices mode (10 containers - ZTA ready):**
+```bash
+docker-compose -f docker-compose.microservices.yml up --build
+```
+
+### 4. Verify Deployment
+
+```bash
+# Check all services are healthy
+docker-compose -f docker-compose.microservices.yml ps
+
+# Test supervisor health
+curl http://localhost:8080/health
+
+# List registered agents
+curl http://localhost:8080/agents
+
+# Test chat endpoint
+curl -X POST http://localhost:8080/chat \
   -H "Content-Type: application/json" \
-  -H "X-Request-ID: test-123" \
-  -d '{
-    "origin": "JFK",
-    "destination": "LAX",
-    "departure_date": "2026-02-15",
-    "passengers": 2,
-    "cabin_class": "economy"
-  }'
+  -d '{"message": "List available airports"}'
 ```
 
-### Create Booking
+## 📁 Project Structure
+
+```
+zta-testbed/
+├── agents/
+│   ├── agent-base/             # Shared base class for worker agents
+│   │   └── base_agent.py
+│   ├── airline-agent/          # Airline domain agent (microservice)
+│   │   ├── agent.py
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   ├── hotel-agent/            # Hotel domain agent (microservice)
+│   │   ├── agent.py
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   ├── car-rental-agent/       # Car rental domain agent (microservice)
+│   │   ├── agent.py
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   ├── supervisor/             # Supervisor orchestrator (microservice)
+│   │   ├── supervisor.py
+│   │   ├── Dockerfile
+│   │   └── requirements.txt
+│   └── travel-supervisor/      # Original monolithic supervisor
+│       └── ...
+│
+├── mcp-servers/                # MCP protocol layer
+│   ├── airline/
+│   │   └── server.py           # FastMCP server (6 tools)
+│   ├── hotel/
+│   │   └── server.py           # FastMCP server (6 tools)
+│   └── car-rental/
+│       └── server.py           # FastMCP server (8 tools)
+│
+├── services/                   # Backend APIs
+│   ├── airline/
+│   │   └── app.py              # FastAPI + SQLite
+│   ├── hotel/
+│   │   └── app.py              # FastAPI + SQLite
+│   └── car-rental/
+│       └── app.py              # FastAPI + SQLite
+│
+├── docker-compose.yml                  # Monolithic mode (7 containers)
+├── docker-compose.microservices.yml    # Microservices mode (10 containers)
+├── .env.example                        # Environment template
+└── README.md
+```
+
+## 🔧 Configuration
+
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `ANTHROPIC_API_KEY` | One of these | Anthropic Claude API key |
+| `OPENAI_API_KEY` | One of these | OpenAI API key |
+| `GROQ_API_KEY` | One of these | Groq API key |
+| `LANGCHAIN_TRACING_V2` | Optional | Enable LangSmith tracing |
+| `LANGCHAIN_API_KEY` | Optional | LangSmith API key |
+| `LANGCHAIN_PROJECT` | Optional | LangSmith project name |
+
+### Port Reference
+
+| Service | Port | Description |
+|---------|------|-------------|
+| airline-service | 8001 | Airline backend API |
+| hotel-service | 8002 | Hotel backend API |
+| car-rental-service | 8003 | Car rental backend API |
+| airline-mcp | 8010 | Airline MCP server |
+| hotel-mcp | 8011 | Hotel MCP server |
+| car-rental-mcp | 8012 | Car rental MCP server |
+| airline-agent | 8091 | Airline agent (microservices mode) |
+| hotel-agent | 8092 | Hotel agent (microservices mode) |
+| car-rental-agent | 8093 | Car rental agent (microservices mode) |
+| supervisor | 8080 | Supervisor orchestrator |
+
+## 🛠️ Available Tools
+
+### Airline Agent (6 tools)
+- `list_airports` - List all available airports
+- `search_flights` - Search flights by origin/destination/date
+- `get_flight_details` - Get specific flight information
+- `book_flight` - Book a flight
+- `get_booking` - Retrieve booking by confirmation code
+- `cancel_booking` - Cancel a booking
+
+### Hotel Agent (6 tools)
+- `list_cities` - List cities with hotels
+- `search_hotels` - Search hotels by city/dates/guests
+- `get_hotel_details` - Get hotel information
+- `book_hotel` - Book a room
+- `get_reservation` - Retrieve reservation
+- `cancel_reservation` - Cancel reservation
+
+### Car Rental Agent (8 tools)
+- `list_locations` - List rental locations
+- `search_vehicles` - Search available vehicles
+- `get_vehicle_details` - Get vehicle information
+- `get_vehicle_categories` - List vehicle categories
+- `book_vehicle` - Book a vehicle
+- `get_rental` - Retrieve rental details
+- `modify_rental` - Modify existing rental
+- `cancel_rental` - Cancel rental
+
+## 🧪 Testing
+
+### Supervisor API (Microservices Mode)
 
 ```bash
-curl -X POST http://localhost:8001/api/v1/bookings \
+# Health check with agent status
+curl http://localhost:8080/health
+
+# List all agents and their tools
+curl http://localhost:8080/agents
+
+# Chat endpoint (auto-routes to correct agent)
+curl -X POST http://localhost:8080/chat \
   -H "Content-Type: application/json" \
-  -H "X-Request-ID: test-456" \
-  -d '{
-    "flight_id": "<flight_id_from_search>",
-    "passengers": [
-      {"first_name": "John", "last_name": "Doe", "email": "john@example.com"}
-    ],
-    "contact_email": "john@example.com"
-  }'
+  -d '{"message": "Search for flights from JFK to LAX"}'
+
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Find hotels in New York"}'
+
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "List car rental locations"}'
 ```
 
-### Enable Chaos Mode
+### Direct Agent APIs
 
 ```bash
-# Add 200ms latency and 10% failure rate
-curl -X POST "http://localhost:8001/chaos/enable?latency_ms=200&failure_rate=0.1"
+# Airline agent
+curl http://localhost:8091/health
+curl http://localhost:8091/capabilities
+
+# Hotel agent  
+curl http://localhost:8092/health
+curl http://localhost:8092/capabilities
+
+# Car rental agent
+curl http://localhost:8093/health
+curl http://localhost:8093/capabilities
 ```
 
-## Environment Variables
+### Backend APIs
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8001` | Server port |
-| `SERVICE_NAME` | `airline-service` | Service name for telemetry |
-| `SERVICE_VERSION` | `1.0.0` | Service version |
-| `CHAOS_ENABLED` | `false` | Enable chaos engineering |
-| `CHAOS_LATENCY_MS` | `0` | Injected latency in ms |
-| `CHAOS_FAILURE_RATE` | `0.0` | Random failure rate (0.0-1.0) |
-| `MAX_RPS` | `100` | Max requests per second |
+```bash
+# List airports
+curl http://localhost:8001/api/v1/airports
 
-## Supported Airports
+# Search flights
+curl "http://localhost:8001/api/v1/flights/search?origin=JFK&destination=LAX"
 
-| Code | Name |
-|------|------|
-| JFK | New York JFK |
-| LAX | Los Angeles |
-| ORD | Chicago O'Hare |
-| SFO | San Francisco |
-| MIA | Miami |
-| SEA | Seattle |
-| BOS | Boston |
-| DFW | Dallas/Fort Worth |
-| ATL | Atlanta |
-| DEN | Denver |
+# Search hotels
+curl "http://localhost:8002/api/v1/hotels/search?city=New%20York"
 
-## ZTA Integration Points
-
-This service is designed to work with the ZTA control plane sidecar:
-
-1. **Header Propagation**: Accepts `X-Request-ID`, `X-Trace-ID`, and `Authorization` headers for distributed tracing and policy enforcement.
-
-2. **OpenTelemetry**: Exports traces and metrics that can be collected by the control plane's telemetry framework.
-
-3. **Network Policy**: Kubernetes NetworkPolicy restricts traffic to authorized sources only.
-
-4. **Chaos Endpoints**: Protected endpoints that should only be accessible via the control plane for authorized chaos testing.
-
-## Architecture Notes
-
-```
-┌─────────────────────────────────────────────────────┐
-│                   ZTA Sidecar                       │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
-│  │   PEP    │  │  Auth    │  │  Telemetry       │  │
-│  │ (Nginx)  │──│  Check   │──│  (OTel)          │  │
-│  └────┬─────┘  └──────────┘  └──────────────────┘  │
-│       │                                             │
-│       ▼                                             │
-│  ┌─────────────────────────────────────────────┐   │
-│  │           Airline Service                    │   │
-│  │  ┌─────────┐  ┌─────────┐  ┌─────────────┐  │   │
-│  │  │ FastAPI │──│ Business│──│ Mock Data   │  │   │
-│  │  │ Router  │  │ Logic   │  │ Store       │  │   │
-│  │  └─────────┘  └─────────┘  └─────────────┘  │   │
-│  └─────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────┘
+# Search vehicles
+curl "http://localhost:8003/api/v1/vehicles/search?location_id=1"
 ```
 
-## Next Steps
+## 🐛 Troubleshooting
 
-1. Deploy the Hotel and Car Rental services (similar pattern)
-2. Add the ZTA sidecar container to the pod spec
-3. Configure OPA policies for authorization
-4. Set up the central control plane for policy distribution
+### "Tool call failed: 406" Error
+This indicates the MCP server rejected the request. Check MCP server logs:
+```bash
+docker-compose -f docker-compose.microservices.yml logs airline-mcp
+```
+
+### Container Health Checks Failing
+```bash
+# Check logs
+docker-compose -f docker-compose.microservices.yml logs <service-name>
+
+# Verify ports are free
+lsof -i :8001
+```
+
+### API Key Errors
+```bash
+# Rebuild with new environment
+docker-compose -f docker-compose.microservices.yml down
+docker-compose -f docker-compose.microservices.yml up --build
+```
+
+### Full Reset
+```bash
+docker-compose -f docker-compose.microservices.yml down -v --rmi all
+docker-compose -f docker-compose.microservices.yml build --no-cache
+docker-compose -f docker-compose.microservices.yml up
+```
+
+## 📊 Observability
+
+### OpenTelemetry
+All 10 services emit OTEL traces with distributed trace context propagation:
+
+- Trace IDs propagate: Supervisor → Agent → MCP → Backend
+- Each service reports: `service.name`, `service.version`
+- HTTP spans include: method, route, status code, duration
+
+### LangSmith Tracing
+Enable in `.env`:
+```env
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=your_key
+LANGCHAIN_PROJECT=zta-testbed
+```
+
+View traces at: https://smith.langchain.com
+
+## 🔐 Zero-Trust Architecture
+
+The microservices architecture enables implementing ZTA principles:
+
+### Current Implementation
+1. **Service Isolation**: Each agent runs in its own container
+2. **Identity Headers**: Agents propagate `x-agent-id` and `x-supervisor-id`
+3. **HTTP Boundaries**: All communication over HTTP for policy interception
+4. **Health Monitoring**: Continuous health checks on all services
+
+### Planned ZTA Enhancements
+- **Policy Decision Point (PDP)**: OPA/Rego policy engine
+- **Policy Enforcement Points (PEPs)**: Envoy sidecars between services
+- **mTLS**: Mutual TLS between all services
+- **JWT Authentication**: Token-based agent identity verification
+- **Audit Logging**: Request/response logging for compliance
+
+### ZTA Network Boundaries
+```
+┌─────────────┐     ┌─────┐     ┌─────────────┐
+│  Supervisor │────▶│ PEP │────▶│    Agent    │
+└─────────────┘     └─────┘     └─────────────┘
+                       │
+                       ▼
+                   ┌─────┐
+                   │ PDP │ (OPA)
+                   └─────┘
+```
+
+## 📚 Documentation
+
+- [Deployment Guide](docs/deployment_guide.pdf) - Comprehensive deployment instructions
+- [Architecture Justification](docs/supervisor_architecture_justification.pdf) - Academic rationale
+- [Literature Survey](docs/zero_trust_agent_lit_survey.docx) - Research background
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
+
+## 📄 License
+
+MIT License - see [LICENSE](LICENSE) for details.
+
+## 🙏 Acknowledgments
+
+- [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration
+- [FastMCP](https://github.com/jlowin/fastmcp) - MCP server implementation
+- [FastAPI](https://fastapi.tiangolo.com/) - Backend services
+- [OpenTelemetry](https://opentelemetry.io/) - Distributed tracing

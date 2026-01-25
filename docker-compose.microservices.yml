@@ -1,0 +1,240 @@
+version: '3.8'
+
+# =============================================================================
+# ZTA Multi-Agent Testbed - Microservices Architecture
+# =============================================================================
+# Each agent is now a separate container with its own identity
+# 
+# Architecture:
+#   User → Supervisor → Worker Agents → MCP Servers → Backend Services
+#                (:8080)     (:8091-8093)   (:8010-8012)    (:8001-8003)
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # Backend Services (FastAPI + SQLite)
+  # ===========================================================================
+  
+  airline-service:
+    build:
+      context: ./services/airline
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - PORT=8001
+      - OTEL_SERVICE_NAME=airline-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zta-network
+
+  hotel-service:
+    build:
+      context: ./services/hotel
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - PORT=8002
+      - OTEL_SERVICE_NAME=hotel-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zta-network
+
+  car-rental-service:
+    build:
+      context: ./services/car-rental
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - PORT=8003
+      - OTEL_SERVICE_NAME=car-rental-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zta-network
+
+  # ===========================================================================
+  # MCP Servers (FastMCP with HTTP transport)
+  # ===========================================================================
+  
+  airline-mcp:
+    build:
+      context: ./mcp-servers/airline
+      dockerfile: Dockerfile
+    ports:
+      - "8010:8010"
+    environment:
+      - PORT=8010
+      - AIRLINE_SERVICE_URL=http://airline-service:8001
+      - OTEL_SERVICE_NAME=airline-mcp
+    depends_on:
+      airline-service:
+        condition: service_healthy
+    networks:
+      - zta-network
+
+  hotel-mcp:
+    build:
+      context: ./mcp-servers/hotel
+      dockerfile: Dockerfile
+    ports:
+      - "8011:8011"
+    environment:
+      - PORT=8011
+      - HOTEL_SERVICE_URL=http://hotel-service:8002
+      - OTEL_SERVICE_NAME=hotel-mcp
+    depends_on:
+      hotel-service:
+        condition: service_healthy
+    networks:
+      - zta-network
+
+  car-rental-mcp:
+    build:
+      context: ./mcp-servers/car-rental
+      dockerfile: Dockerfile
+    ports:
+      - "8012:8012"
+    environment:
+      - PORT=8012
+      - CAR_RENTAL_SERVICE_URL=http://car-rental-service:8003
+      - OTEL_SERVICE_NAME=car-rental-mcp
+    depends_on:
+      car-rental-service:
+        condition: service_healthy
+    networks:
+      - zta-network
+
+  # ===========================================================================
+  # Worker Agents (Separate Microservices)
+  # ===========================================================================
+  
+  airline-agent:
+    build:
+      context: ./agents/airline-agent
+      dockerfile: Dockerfile
+    ports:
+      - "8091:8091"
+    environment:
+      - PORT=8091
+      - AIRLINE_MCP_URL=http://airline-mcp:8010
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OTEL_SERVICE_NAME=airline-agent
+    depends_on:
+      airline-mcp:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - zta-network
+
+  hotel-agent:
+    build:
+      context: ./agents/hotel-agent
+      dockerfile: Dockerfile
+    ports:
+      - "8092:8092"
+    environment:
+      - PORT=8092
+      - HOTEL_MCP_URL=http://hotel-mcp:8011
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OTEL_SERVICE_NAME=hotel-agent
+    depends_on:
+      hotel-mcp:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - zta-network
+
+  car-rental-agent:
+    build:
+      context: ./agents/car-rental-agent
+      dockerfile: Dockerfile
+    ports:
+      - "8093:8093"
+    environment:
+      - PORT=8093
+      - CAR_RENTAL_MCP_URL=http://car-rental-mcp:8012
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OTEL_SERVICE_NAME=car-rental-agent
+    depends_on:
+      car-rental-mcp:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8093/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - zta-network
+
+  # ===========================================================================
+  # Supervisor Agent (Orchestrator)
+  # ===========================================================================
+  
+  supervisor:
+    build:
+      context: ./agents/supervisor
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - AIRLINE_AGENT_URL=http://airline-agent:8091
+      - HOTEL_AGENT_URL=http://hotel-agent:8092
+      - CAR_RENTAL_AGENT_URL=http://car-rental-agent:8093
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-zta-testbed}
+      - OTEL_SERVICE_NAME=supervisor
+    depends_on:
+      airline-agent:
+        condition: service_started
+      hotel-agent:
+        condition: service_started
+      car-rental-agent:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - zta-network
+
+networks:
+  zta-network:
+    driver: bridge
