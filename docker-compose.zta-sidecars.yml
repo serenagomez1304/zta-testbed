@@ -1,0 +1,368 @@
+# =============================================================================
+# ZTA Multi-Agent Testbed - With Envoy Sidecars & OPA Policy Engine
+# =============================================================================
+# Architecture:
+#   - OPA: Policy Decision Point (PDP) - makes authorization decisions
+#   - Envoy Sidecars: Policy Enforcement Points (PEPs) - enforce decisions
+#   - Services: Protected by their respective sidecars
+#
+# Traffic Flow:
+#   User → Travel Planner Envoy → Travel Planner
+#        → Agent Envoy → Agent → MCP Envoy → MCP → Service
+#
+# All inter-service communication goes through Envoy for policy enforcement
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # OPA - Policy Decision Point (PDP)
+  # ===========================================================================
+  
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: zta-opa
+    command:
+      - "run"
+      - "--server"
+      - "--addr=0.0.0.0:8181"
+      - "--log-level=info"
+      - "--log-format=json"
+      - "/policies/policy.rego"
+    volumes:
+      - ./zta-infrastructure/opa:/policies:ro
+    ports:
+      - "8181:8181"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8181/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zta-network
+
+  # ===========================================================================
+  # Backend Services (No sidecars - internal only)
+  # ===========================================================================
+  
+  airline-service:
+    build:
+      context: ./services/airline
+      dockerfile: Dockerfile
+    container_name: zta-airline-service
+    environment:
+      - PORT=8001
+      - OTEL_SERVICE_NAME=airline-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zta-network
+
+  hotel-service:
+    build:
+      context: ./services/hotel
+      dockerfile: Dockerfile
+    container_name: zta-hotel-service
+    environment:
+      - PORT=8002
+      - OTEL_SERVICE_NAME=hotel-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zta-network
+
+  car-rental-service:
+    build:
+      context: ./services/car-rental
+      dockerfile: Dockerfile
+    container_name: zta-car-rental-service
+    environment:
+      - PORT=8003
+      - OTEL_SERVICE_NAME=car-rental-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - zta-network
+
+  itinerary-service:
+    build:
+      context: ./services/itinerary
+      dockerfile: Dockerfile
+    container_name: zta-itinerary-service
+    environment:
+      - PORT=8084
+      - DATABASE_URL=sqlite:///./itinerary.db
+      - OTEL_SERVICE_NAME=itinerary-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - zta-network
+
+  # ===========================================================================
+  # MCP Servers with Envoy Sidecars
+  # ===========================================================================
+  
+  # Airline MCP - Protected by Envoy sidecar
+  airline-mcp:
+    build:
+      context: ./mcp-servers/airline
+      dockerfile: Dockerfile
+    container_name: zta-airline-mcp
+    environment:
+      - PORT=8010
+      - AIRLINE_SERVICE_URL=http://airline-service:8001
+      - OTEL_SERVICE_NAME=airline-mcp
+    depends_on:
+      airline-service:
+        condition: service_healthy
+    networks:
+      - zta-network
+
+  airline-mcp-envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: zta-airline-mcp-envoy
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./zta-infrastructure/envoy/envoy-airline-mcp.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "18010:10000"  # Inbound via Envoy
+      - "19010:9901"   # Envoy admin
+    depends_on:
+      - airline-mcp
+      - opa
+    networks:
+      - zta-network
+
+  # Hotel MCP - Protected by Envoy sidecar
+  hotel-mcp:
+    build:
+      context: ./mcp-servers/hotel
+      dockerfile: Dockerfile
+    container_name: zta-hotel-mcp
+    environment:
+      - PORT=8011
+      - HOTEL_SERVICE_URL=http://hotel-service:8002
+      - OTEL_SERVICE_NAME=hotel-mcp
+    depends_on:
+      hotel-service:
+        condition: service_healthy
+    networks:
+      - zta-network
+
+  hotel-mcp-envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: zta-hotel-mcp-envoy
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./zta-infrastructure/envoy/envoy-hotel-mcp.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "18011:10000"
+      - "19011:9901"
+    depends_on:
+      - hotel-mcp
+      - opa
+    networks:
+      - zta-network
+
+  # Car Rental MCP - Protected by Envoy sidecar
+  car-rental-mcp:
+    build:
+      context: ./mcp-servers/car-rental
+      dockerfile: Dockerfile
+    container_name: zta-car-rental-mcp
+    environment:
+      - PORT=8012
+      - CAR_RENTAL_SERVICE_URL=http://car-rental-service:8003
+      - OTEL_SERVICE_NAME=car-rental-mcp
+    depends_on:
+      car-rental-service:
+        condition: service_healthy
+    networks:
+      - zta-network
+
+  car-rental-mcp-envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: zta-car-rental-mcp-envoy
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./zta-infrastructure/envoy/envoy-car-rental-mcp.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "18012:10000"
+      - "19012:9901"
+    depends_on:
+      - car-rental-mcp
+      - opa
+    networks:
+      - zta-network
+
+  # ===========================================================================
+  # Worker Agents with Envoy Sidecars
+  # ===========================================================================
+  
+  # Airline Agent - Protected by Envoy sidecar
+  airline-agent:
+    build:
+      context: ./agents/airline-agent
+      dockerfile: Dockerfile
+    container_name: zta-airline-agent
+    environment:
+      - PORT=8091
+      # Point to MCP via Envoy sidecar
+      - AIRLINE_MCP_URL=http://airline-mcp-envoy:10000
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OTEL_SERVICE_NAME=airline-agent
+    depends_on:
+      - airline-mcp-envoy
+    networks:
+      - zta-network
+
+  airline-agent-envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: zta-airline-agent-envoy
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./zta-infrastructure/envoy/envoy-airline-agent.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "18091:10000"
+      - "19091:9901"
+    depends_on:
+      - airline-agent
+      - opa
+    networks:
+      - zta-network
+
+  # Hotel Agent - Protected by Envoy sidecar
+  hotel-agent:
+    build:
+      context: ./agents/hotel-agent
+      dockerfile: Dockerfile
+    container_name: zta-hotel-agent
+    environment:
+      - PORT=8092
+      - HOTEL_MCP_URL=http://hotel-mcp-envoy:10000
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OTEL_SERVICE_NAME=hotel-agent
+    depends_on:
+      - hotel-mcp-envoy
+    networks:
+      - zta-network
+
+  hotel-agent-envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: zta-hotel-agent-envoy
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./zta-infrastructure/envoy/envoy-hotel-agent.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "18092:10000"
+      - "19092:9901"
+    depends_on:
+      - hotel-agent
+      - opa
+    networks:
+      - zta-network
+
+  # Car Rental Agent - Protected by Envoy sidecar
+  car-rental-agent:
+    build:
+      context: ./agents/car-rental-agent
+      dockerfile: Dockerfile
+    container_name: zta-car-rental-agent
+    environment:
+      - PORT=8093
+      - CAR_RENTAL_MCP_URL=http://car-rental-mcp-envoy:10000
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - OTEL_SERVICE_NAME=car-rental-agent
+    depends_on:
+      - car-rental-mcp-envoy
+    networks:
+      - zta-network
+
+  car-rental-agent-envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: zta-car-rental-agent-envoy
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./zta-infrastructure/envoy/envoy-car-rental-agent.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "18093:10000"
+      - "19093:9901"
+    depends_on:
+      - car-rental-agent
+      - opa
+    networks:
+      - zta-network
+
+  # ===========================================================================
+  # Travel Planner with Envoy Sidecar
+  # ===========================================================================
+  
+  travel-planner:
+    build:
+      context: ./agents/travel-planner
+      dockerfile: Dockerfile
+    container_name: zta-travel-planner
+    environment:
+      - PORT=8080
+      - PLANNER_ID=travel-planner
+      - PLANNER_NAME=Travel Planner
+      # Point to agents via their Envoy sidecars
+      - AIRLINE_AGENT_URL=http://airline-agent-envoy:10000
+      - HOTEL_AGENT_URL=http://hotel-agent-envoy:10000
+      - CAR_RENTAL_AGENT_URL=http://car-rental-agent-envoy:10000
+      - ITINERARY_SERVICE_URL=http://itinerary-service:8084
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-zta-testbed}
+      - OTEL_SERVICE_NAME=travel-planner
+    depends_on:
+      itinerary-service:
+        condition: service_healthy
+      airline-agent-envoy:
+        condition: service_started
+      hotel-agent-envoy:
+        condition: service_started
+      car-rental-agent-envoy:
+        condition: service_started
+    networks:
+      - zta-network
+
+  travel-planner-envoy:
+    image: envoyproxy/envoy:v1.28-latest
+    container_name: zta-travel-planner-envoy
+    command: ["-c", "/etc/envoy/envoy.yaml", "--log-level", "info"]
+    volumes:
+      - ./zta-infrastructure/envoy/envoy-travel-planner.yaml:/etc/envoy/envoy.yaml:ro
+    ports:
+      - "8080:10000"    # Main entry point
+      - "19080:9901"    # Envoy admin
+    depends_on:
+      - travel-planner
+      - opa
+    networks:
+      - zta-network
+
+networks:
+  zta-network:
+    driver: bridge

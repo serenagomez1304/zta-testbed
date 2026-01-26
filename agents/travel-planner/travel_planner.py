@@ -527,8 +527,10 @@ async def call_agent(domain: str, message: str, context: Optional[UserContext] =
                 f"{agent.url}/invoke",  # Changed from /process to /invoke
                 json=request_data,
                 headers={
-                    "x-planner-id": PLANNER_ID,
-                    "x-agent-id": agent.agent_id
+                    "x-agent-id": PLANNER_ID,  # Source identity (travel-planner)
+                    "x-supervisor-id": PLANNER_ID,  # Supervisor identity
+                    "x-target-agent": agent.agent_id,  # Target agent
+                    "Content-Type": "application/json"
                 }
             )
             

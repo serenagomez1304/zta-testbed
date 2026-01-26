@@ -129,7 +129,7 @@ class HotelAgent:
             logger.info("Using OpenAI GPT-4")
         elif GROQ_API_KEY:
             from langchain_groq import ChatGroq
-            self.llm = ChatGroq(model="llama-3.1-70b-versatile", api_key=GROQ_API_KEY)
+            self.llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=GROQ_API_KEY)
             logger.info("Using Groq")
     
     async def shutdown(self):

@@ -1,0 +1,222 @@
+# =============================================================================
+# Envoy Sidecar Base Configuration - Policy Enforcement Point (PEP)
+# =============================================================================
+# This is the base configuration template for Envoy sidecars.
+# Each service will have its own sidecar with customized listener/cluster configs.
+#
+# Architecture:
+#   Inbound: External Traffic → Envoy (auth check) → Service
+#   Outbound: Service → Envoy (auth check) → External Services
+# =============================================================================
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+    # =========================================================================
+    # Inbound Listener - Intercepts traffic TO this service
+    # =========================================================================
+    - name: inbound_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10000
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: inbound_http
+                codec_type: AUTO
+                # Access logging for audit trail
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          direction: "inbound"
+                          source_ip: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          destination: "%UPSTREAM_HOST%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          protocol: "%PROTOCOL%"
+                          response_code: "%RESPONSE_CODE%"
+                          response_flags: "%RESPONSE_FLAGS%"
+                          duration_ms: "%DURATION%"
+                          agent_id: "%REQ(X-AGENT-ID)%"
+                          request_id: "%REQ(X-REQUEST-ID)%"
+                          authz_decision: "%DYNAMIC_METADATA(envoy.filters.http.ext_authz:decision)%"
+                route_config:
+                  name: inbound_route
+                  virtual_hosts:
+                    - name: local_service
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: local_service
+                            timeout: 60s
+                http_filters:
+                  # External Authorization Filter - Calls OPA for policy decision
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: opa_cluster
+                        timeout: 1s
+                      failure_mode_allow: false  # Deny on OPA failure (fail-secure)
+                      with_request_body:
+                        max_request_bytes: 8192
+                        allow_partial_message: true
+                        pack_as_bytes: false
+                      include_peer_certificate: true
+                      status_on_error:
+                        code: 503
+                  # Router filter (must be last)
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+    # =========================================================================
+    # Outbound Listener - Intercepts traffic FROM this service
+    # =========================================================================
+    - name: outbound_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10001
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: outbound_http
+                codec_type: AUTO
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          direction: "outbound"
+                          source_ip: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          destination: "%UPSTREAM_HOST%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          protocol: "%PROTOCOL%"
+                          response_code: "%RESPONSE_CODE%"
+                          agent_id: "%REQ(X-AGENT-ID)%"
+                          target_service: "%REQ(X-TARGET-SERVICE)%"
+                route_config:
+                  name: outbound_route
+                  virtual_hosts:
+                    - name: outbound_services
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: dynamic_forward_proxy
+                            timeout: 60s
+                http_filters:
+                  # Inject agent identity header for outbound requests
+                  - name: envoy.filters.http.lua
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.lua.v3.Lua
+                      default_source_code:
+                        inline_string: |
+                          function envoy_on_request(request_handle)
+                            -- Ensure agent-id is present on outbound requests
+                            local agent_id = os.getenv("AGENT_ID") or "unknown"
+                            if not request_handle:headers():get("x-agent-id") then
+                              request_handle:headers():add("x-agent-id", agent_id)
+                            end
+                            -- Add request tracing
+                            local request_id = request_handle:headers():get("x-request-id")
+                            if not request_id then
+                              request_handle:headers():add("x-request-id", tostring(os.time()) .. "-" .. tostring(math.random(10000)))
+                            end
+                          end
+                  # External authorization for outbound calls
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: opa_cluster
+                        timeout: 1s
+                      failure_mode_allow: false
+                      with_request_body:
+                        max_request_bytes: 8192
+                        allow_partial_message: true
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    # =========================================================================
+    # Local Service Cluster - The actual service this sidecar protects
+    # =========================================================================
+    - name: local_service
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: local_service
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 8080  # Will be overridden per-service
+
+    # =========================================================================
+    # OPA Cluster - Policy Decision Point
+    # =========================================================================
+    - name: opa_cluster
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: opa_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: opa
+                      port_value: 9191  # OPA gRPC port
+
+    # =========================================================================
+    # Dynamic Forward Proxy - For outbound service calls
+    # =========================================================================
+    - name: dynamic_forward_proxy
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: dynamic_forward_proxy
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1  # Placeholder - configured dynamically
+                      port_value: 80
