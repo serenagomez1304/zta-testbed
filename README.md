@@ -1,392 +1,371 @@
 # ZTA Multi-Agent Testbed
 
-A Zero-Trust Architecture (ZTA) testbed implementing a multi-agent travel booking system using the **Supervisor-Worker** pattern with **Model Context Protocol (MCP)** for secure inter-agent communication.
+A Zero-Trust Architecture testbed for evaluating security in multi-agent AI systems. This project implements a travel booking system with multiple specialized agents communicating through a central Travel Planner, demonstrating how ZTA principles can be applied to AI agent communications.
 
-## 🏗️ Architecture
-
-The system now supports **two deployment modes**:
-
-### Monolithic Mode (Original)
-All agents run in a single supervisor container with in-process function calls.
+## Architecture
 
 ```
-docker-compose up --build
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              User Interface                                  │
+└─────────────────────────────────────────────┬───────────────────────────────┘
+                                              │
+                                              ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           TRAVEL PLANNER (:8080)                            │
+│                                                                              │
+│  • Intent Classification    • Context-Aware Routing    • Trip Management    │
+│  • User Session Management  • Itinerary Queries        • Multi-Agent Coord  │
+└──────────────┬─────────────────────┬─────────────────────┬──────────────────┘
+               │                     │                     │
+               │                     │                     │
+               ▼                     ▼                     ▼
+┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
+│   AIRLINE AGENT      │  │    HOTEL AGENT       │  │  CAR RENTAL AGENT    │
+│      (:8091)         │  │      (:8092)         │  │      (:8093)         │
+│                      │  │                      │  │                      │
+│ • Flight Search      │  │ • Hotel Search       │  │ • Vehicle Search     │
+│ • Booking            │  │ • Booking            │  │ • Booking            │
+│ • Cancellation       │  │ • Cancellation       │  │ • Modification       │
+└──────────┬───────────┘  └──────────┬───────────┘  └──────────┬───────────┘
+           │                         │                         │
+           │ MCP Protocol            │ MCP Protocol            │ MCP Protocol
+           ▼                         ▼                         ▼
+┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
+│   AIRLINE MCP        │  │    HOTEL MCP         │  │  CAR RENTAL MCP      │
+│      (:8010)         │  │      (:8011)         │  │      (:8012)         │
+└──────────┬───────────┘  └──────────┬───────────┘  └──────────┬───────────┘
+           │                         │                         │
+           │ REST API                │ REST API                │ REST API
+           ▼                         ▼                         ▼
+┌──────────────────────┐  ┌──────────────────────┐  ┌──────────────────────┐
+│  AIRLINE SERVICE     │  │   HOTEL SERVICE      │  │ CAR RENTAL SERVICE   │
+│      (:8001)         │  │      (:8002)         │  │      (:8003)         │
+│     [SQLite]         │  │     [SQLite]         │  │     [SQLite]         │
+└──────────────────────┘  └──────────────────────┘  └──────────────────────┘
+
+                    ┌──────────────────────────────────┐
+                    │      ITINERARY SERVICE           │
+                    │           (:8084)                │
+                    │                                  │
+                    │  • User Management               │
+                    │  • Trip Storage                  │
+                    │  • Booking History               │
+                    │  • Conversation Context          │
+                    │          [SQLite]                │
+                    └──────────────────────────────────┘
 ```
 
-### Microservices Mode (New - ZTA Ready)
-Each agent runs as a separate container with HTTP-based communication, enabling Zero-Trust policy enforcement between services.
+## Components
 
-```
-docker-compose -f docker-compose.microservices.yml up --build
-```
+### Travel Planner (Port 8080)
+The intelligent orchestrator that:
+- Classifies user intent (search, book, query, create trip, etc.)
+- Routes requests to appropriate specialized agents
+- Maintains user context from the Itinerary Service
+- Handles multi-step travel planning workflows
 
-```
-                         ┌─────────────────────────────────┐
-                         │        SUPERVISOR               │
-                         │      (Orchestrator)             │
-                         │          :8080                  │
-                         └───────────────┬─────────────────┘
-                                         │ HTTP
-             ┌───────────────────────────┼───────────────────────┐
-             │                           │                       │
-             ▼                           ▼                       ▼
-     ┌───────────────┐           ┌───────────────┐       ┌───────────────┐
-     │ Airline Agent │           │  Hotel Agent  │       │Car Rental Agent│
-     │    :8091      │           │    :8092      │       │    :8093       │
-     └───────┬───────┘           └───────┬───────┘       └───────┬───────┘
-             │ HTTP                      │ HTTP                  │ HTTP
-             ▼                           ▼                       ▼
-     ┌───────────────┐           ┌───────────────┐       ┌───────────────┐
-     │  Airline MCP  │           │   Hotel MCP   │       │ Car Rental MCP│
-     │    :8010      │           │    :8011      │       │    :8012      │
-     └───────┬───────┘           └───────┬───────┘       └───────┬───────┘
-             │ HTTP                      │ HTTP                  │ HTTP
-             ▼                           ▼                       ▼
-     ┌───────────────┐           ┌───────────────┐       ┌───────────────┐
-     │Airline Service│           │ Hotel Service │       │Car Rental Svc │
-     │    :8001      │           │    :8002      │       │    :8003      │
-     │   (SQLite)    │           │   (SQLite)    │       │   (SQLite)    │
-     └───────────────┘           └───────────────┘       └───────────────┘
-```
+### Worker Agents (Ports 8091-8093)
+Specialized agents for each domain:
+- **Airline Agent**: Flight search, booking, cancellation
+- **Hotel Agent**: Hotel search, booking, reservations
+- **Car Rental Agent**: Vehicle search, rental booking, modifications
 
-## ✨ Features
+### MCP Servers (Ports 8010-8012)
+Model Context Protocol servers that:
+- Expose backend functionality as tools for agents
+- Handle protocol translation between agents and services
+- Manage session state for tool calls
 
-- **Supervisor-Worker Pattern**: Central orchestrator routes requests to specialized domain agents
-- **MCP Protocol**: Standardized tool exposure via Model Context Protocol
-- **Microservices Architecture**: Each agent as a separate container for ZTA enforcement
-- **HTTP Transport**: All inter-service communication over HTTP for policy interception
-- **OpenTelemetry**: Distributed tracing across all 10 services
-- **Identity Headers**: ZTA-ready identity propagation (`x-agent-id`, `x-supervisor-id`)
-- **Docker Ready**: Full containerization with health checks
-- **Kubernetes Ready**: Architecture designed for service mesh deployment
+### Backend Services (Ports 8001-8003)
+RESTful APIs with SQLite databases:
+- **Airline Service**: Flights, airports, bookings
+- **Hotel Service**: Hotels, rooms, reservations
+- **Car Rental Service**: Vehicles, locations, rentals
 
-## 🚀 Quick Start
+### Itinerary Service (Port 8084)
+Central database for user data:
+- User profiles and preferences
+- Trip management
+- Booking history across all services
+- Conversation context for intelligent routing
+
+## Quick Start
 
 ### Prerequisites
+- Docker and Docker Compose
+- (Optional) API keys for LLM providers: ANTHROPIC_API_KEY, OPENAI_API_KEY, or GROQ_API_KEY
 
-- Docker & Docker Compose (v2.20+)
-- API key for one of: Anthropic, OpenAI, or Groq
-
-### 1. Clone the Repository
+### Start the System
 
 ```bash
-git clone https://github.com/serenagomez1304/zta-testbed.git
+# Clone the repository
+git clone https://github.com/yourusername/zta-testbed.git
 cd zta-testbed
-```
 
-### 2. Configure Environment
-
-```bash
-cp .env.example .env
-# Edit .env and add your API key(s)
-```
-
-**Required:** At least one LLM API key:
-```env
-ANTHROPIC_API_KEY=sk-ant-xxxxx
-# or
-OPENAI_API_KEY=sk-xxxxx
-# or
-GROQ_API_KEY=gsk_xxxxx
-```
-
-**Optional:** LangSmith tracing:
-```env
-LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=lsv2_xxxxx
-LANGCHAIN_PROJECT=zta-testbed
-```
-
-### 3. Start with Docker Compose
-
-**Monolithic mode (7 containers):**
-```bash
-docker-compose up --build
-```
-
-**Microservices mode (10 containers - ZTA ready):**
-```bash
+# Start all 11 containers
 docker-compose -f docker-compose.microservices.yml up --build
+
+# Or run in detached mode
+docker-compose -f docker-compose.microservices.yml up --build -d
 ```
 
-### 4. Verify Deployment
+### Verify Deployment
 
 ```bash
-# Check all services are healthy
+# Check all services are running
 docker-compose -f docker-compose.microservices.yml ps
 
-# Test supervisor health
-curl http://localhost:8080/health
+# Check Travel Planner health (shows all agent status)
+curl http://localhost:8080/health | jq
 
-# List registered agents
-curl http://localhost:8080/agents
-
-# Test chat endpoint
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "List available airports"}'
+# Check Itinerary Service
+curl http://localhost:8084/health | jq
 ```
 
-## 📁 Project Structure
+## API Usage
+
+### Chat with Travel Planner
+
+```bash
+# Query your itinerary (uses context, no agent needed)
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Show me my trips",
+    "user_id": "11111111-1111-1111-1111-111111111111"
+  }' | jq
+
+# Search for flights (routes to Airline Agent)
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Search for flights to New York",
+    "user_id": "11111111-1111-1111-1111-111111111111"
+  }' | jq
+
+# Search for hotels (routes to Hotel Agent)
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Find hotels in Miami",
+    "user_id": "11111111-1111-1111-1111-111111111111"
+  }' | jq
+
+# Search for rental cars (routes to Car Rental Agent)
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "Search for rental cars",
+    "user_id": "11111111-1111-1111-1111-111111111111"
+  }' | jq
+
+# Create a new trip
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "I want to plan a trip to Chicago",
+    "user_id": "11111111-1111-1111-1111-111111111111"
+  }' | jq
+
+# List available airports
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": "List available airports",
+    "user_id": "11111111-1111-1111-1111-111111111111"
+  }' | jq
+```
+
+### Direct Agent Access
+
+```bash
+# Call Airline Agent directly
+curl -X POST http://localhost:8091/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"message": "List available airports"}' | jq
+
+# Call Hotel Agent directly
+curl -X POST http://localhost:8092/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Search for hotels in New York"}' | jq
+
+# Call Car Rental Agent directly
+curl -X POST http://localhost:8093/invoke \
+  -H "Content-Type: application/json" \
+  -d '{"message": "List rental locations"}' | jq
+```
+
+### Itinerary Service API
+
+```bash
+# List all users
+curl http://localhost:8084/api/v1/users | jq
+
+# Get user context (what Travel Planner uses)
+curl "http://localhost:8084/api/v1/users/11111111-1111-1111-1111-111111111111/context" | jq
+
+# Get user's trips
+curl "http://localhost:8084/api/v1/users/11111111-1111-1111-1111-111111111111/trips" | jq
+
+# Create a new trip
+curl -X POST http://localhost:8084/api/v1/trips \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "11111111-1111-1111-1111-111111111111",
+    "name": "Business Trip",
+    "destination": "San Francisco",
+    "start_date": "2026-03-01",
+    "end_date": "2026-03-05"
+  }' | jq
+```
+
+### Backend Service APIs
+
+```bash
+# Airline Service
+curl http://localhost:8001/api/v1/airports | jq
+curl "http://localhost:8001/api/v1/flights?origin=JFK&destination=LAX&date=2026-02-15" | jq
+
+# Hotel Service
+curl http://localhost:8002/api/v1/cities | jq
+curl "http://localhost:8002/api/v1/hotels?city=New%20York" | jq
+
+# Car Rental Service
+curl http://localhost:8003/api/v1/locations | jq
+curl http://localhost:8003/api/v1/categories | jq
+```
+
+## Test Users (Seeded Data)
+
+| User ID | Name | Email | Has Trips |
+|---------|------|-------|-----------|
+| `11111111-1111-1111-1111-111111111111` | Serena Gomez | serena@example.com | NYC (planning), Miami (planning) |
+| `22222222-2222-2222-2222-222222222222` | John Smith | john@example.com | Chicago (booked with flights+hotel) |
+| `33333333-3333-3333-3333-333333333333` | Alice Johnson | alice@example.com | None |
+
+## Port Reference
+
+| Service | Port | Description |
+|---------|------|-------------|
+| Travel Planner | 8080 | Main orchestrator |
+| Itinerary Service | 8084 | User/trip database |
+| Airline Agent | 8091 | Flight operations |
+| Hotel Agent | 8092 | Hotel operations |
+| Car Rental Agent | 8093 | Vehicle operations |
+| Airline MCP | 8010 | Airline tool server |
+| Hotel MCP | 8011 | Hotel tool server |
+| Car Rental MCP | 8012 | Car rental tool server |
+| Airline Service | 8001 | Flight database |
+| Hotel Service | 8002 | Hotel database |
+| Car Rental Service | 8003 | Rental database |
+
+## Viewing Logs
+
+```bash
+# All services
+docker-compose -f docker-compose.microservices.yml logs -f
+
+# Specific service
+docker-compose -f docker-compose.microservices.yml logs -f travel-planner
+docker-compose -f docker-compose.microservices.yml logs -f airline-agent
+docker-compose -f docker-compose.microservices.yml logs -f airline-mcp
+
+# Multiple services (follow the request flow)
+docker-compose -f docker-compose.microservices.yml logs -f travel-planner airline-agent airline-mcp airline-service
+```
+
+## Zero-Trust Architecture Features
+
+### Current Implementation
+- **Service Isolation**: Each agent runs in its own container
+- **Identity Headers**: All requests include `x-agent-id` and `x-planner-id`
+- **HTTP Boundaries**: All inter-service communication over HTTP (interceptable)
+- **MCP Session Management**: Secure session-based tool access
+- **Audit Logging**: OpenTelemetry tracing across all services
+
+### Planned Enhancements
+- **Policy Decision Point (PDP)**: OPA-based policy evaluation
+- **Policy Enforcement Points (PEPs)**: Envoy sidecars for traffic interception
+- **mTLS**: Mutual TLS for all service-to-service communication
+- **JWT Authentication**: Token-based identity verification
+- **Fine-Grained Authorization**: Agent-specific access policies
+
+## Project Structure
 
 ```
 zta-testbed/
 ├── agents/
-│   ├── agent-base/             # Shared base class for worker agents
-│   │   └── base_agent.py
-│   ├── airline-agent/          # Airline domain agent (microservice)
-│   │   ├── agent.py
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   ├── hotel-agent/            # Hotel domain agent (microservice)
-│   │   ├── agent.py
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   ├── car-rental-agent/       # Car rental domain agent (microservice)
-│   │   ├── agent.py
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   ├── supervisor/             # Supervisor orchestrator (microservice)
-│   │   ├── supervisor.py
-│   │   ├── Dockerfile
-│   │   └── requirements.txt
-│   └── travel-supervisor/      # Original monolithic supervisor
-│       └── ...
-│
-├── mcp-servers/                # MCP protocol layer
-│   ├── airline/
-│   │   └── server.py           # FastMCP server (6 tools)
-│   ├── hotel/
-│   │   └── server.py           # FastMCP server (6 tools)
-│   └── car-rental/
-│       └── server.py           # FastMCP server (8 tools)
-│
-├── services/                   # Backend APIs
-│   ├── airline/
-│   │   └── app.py              # FastAPI + SQLite
-│   ├── hotel/
-│   │   └── app.py              # FastAPI + SQLite
-│   └── car-rental/
-│       └── app.py              # FastAPI + SQLite
-│
-├── docker-compose.yml                  # Monolithic mode (7 containers)
-├── docker-compose.microservices.yml    # Microservices mode (10 containers)
-├── .env.example                        # Environment template
+│   ├── airline-agent/       # Flight operations agent
+│   ├── hotel-agent/         # Hotel operations agent
+│   ├── car-rental-agent/    # Vehicle operations agent
+│   └── travel-planner/      # Central orchestrator
+├── services/
+│   ├── airline/             # Flight backend service
+│   ├── hotel/               # Hotel backend service
+│   ├── car-rental/          # Rental backend service
+│   └── itinerary/           # User/trip database
+├── mcp-servers/
+│   ├── airline/             # Airline MCP server
+│   ├── hotel/               # Hotel MCP server
+│   └── car-rental/          # Car rental MCP server
+├── docker-compose.microservices.yml
 └── README.md
 ```
 
-## 🔧 Configuration
-
-### Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `ANTHROPIC_API_KEY` | One of these | Anthropic Claude API key |
-| `OPENAI_API_KEY` | One of these | OpenAI API key |
-| `GROQ_API_KEY` | One of these | Groq API key |
-| `LANGCHAIN_TRACING_V2` | Optional | Enable LangSmith tracing |
-| `LANGCHAIN_API_KEY` | Optional | LangSmith API key |
-| `LANGCHAIN_PROJECT` | Optional | LangSmith project name |
-
-### Port Reference
-
-| Service | Port | Description |
-|---------|------|-------------|
-| airline-service | 8001 | Airline backend API |
-| hotel-service | 8002 | Hotel backend API |
-| car-rental-service | 8003 | Car rental backend API |
-| airline-mcp | 8010 | Airline MCP server |
-| hotel-mcp | 8011 | Hotel MCP server |
-| car-rental-mcp | 8012 | Car rental MCP server |
-| airline-agent | 8091 | Airline agent (microservices mode) |
-| hotel-agent | 8092 | Hotel agent (microservices mode) |
-| car-rental-agent | 8093 | Car rental agent (microservices mode) |
-| supervisor | 8080 | Supervisor orchestrator |
-
-## 🛠️ Available Tools
-
-### Airline Agent (6 tools)
-- `list_airports` - List all available airports
-- `search_flights` - Search flights by origin/destination/date
-- `get_flight_details` - Get specific flight information
-- `book_flight` - Book a flight
-- `get_booking` - Retrieve booking by confirmation code
-- `cancel_booking` - Cancel a booking
-
-### Hotel Agent (6 tools)
-- `list_cities` - List cities with hotels
-- `search_hotels` - Search hotels by city/dates/guests
-- `get_hotel_details` - Get hotel information
-- `book_hotel` - Book a room
-- `get_reservation` - Retrieve reservation
-- `cancel_reservation` - Cancel reservation
-
-### Car Rental Agent (8 tools)
-- `list_locations` - List rental locations
-- `search_vehicles` - Search available vehicles
-- `get_vehicle_details` - Get vehicle information
-- `get_vehicle_categories` - List vehicle categories
-- `book_vehicle` - Book a vehicle
-- `get_rental` - Retrieve rental details
-- `modify_rental` - Modify existing rental
-- `cancel_rental` - Cancel rental
-
-## 🧪 Testing
-
-### Supervisor API (Microservices Mode)
+## Environment Variables
 
 ```bash
-# Health check with agent status
-curl http://localhost:8080/health
+# LLM Provider (optional - pick one)
+ANTHROPIC_API_KEY=your-key
+OPENAI_API_KEY=your-key
+GROQ_API_KEY=your-key
 
-# List all agents and their tools
-curl http://localhost:8080/agents
-
-# Chat endpoint (auto-routes to correct agent)
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Search for flights from JFK to LAX"}'
-
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Find hotels in New York"}'
-
-curl -X POST http://localhost:8080/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "List car rental locations"}'
-```
-
-### Direct Agent APIs
-
-```bash
-# Airline agent
-curl http://localhost:8091/health
-curl http://localhost:8091/capabilities
-
-# Hotel agent  
-curl http://localhost:8092/health
-curl http://localhost:8092/capabilities
-
-# Car rental agent
-curl http://localhost:8093/health
-curl http://localhost:8093/capabilities
-```
-
-### Backend APIs
-
-```bash
-# List airports
-curl http://localhost:8001/api/v1/airports
-
-# Search flights
-curl "http://localhost:8001/api/v1/flights/search?origin=JFK&destination=LAX"
-
-# Search hotels
-curl "http://localhost:8002/api/v1/hotels/search?city=New%20York"
-
-# Search vehicles
-curl "http://localhost:8003/api/v1/vehicles/search?location_id=1"
-```
-
-## 🐛 Troubleshooting
-
-### "Tool call failed: 406" Error
-This indicates the MCP server rejected the request. Check MCP server logs:
-```bash
-docker-compose -f docker-compose.microservices.yml logs airline-mcp
-```
-
-### Container Health Checks Failing
-```bash
-# Check logs
-docker-compose -f docker-compose.microservices.yml logs <service-name>
-
-# Verify ports are free
-lsof -i :8001
-```
-
-### API Key Errors
-```bash
-# Rebuild with new environment
-docker-compose -f docker-compose.microservices.yml down
-docker-compose -f docker-compose.microservices.yml up --build
-```
-
-### Full Reset
-```bash
-docker-compose -f docker-compose.microservices.yml down -v --rmi all
-docker-compose -f docker-compose.microservices.yml build --no-cache
-docker-compose -f docker-compose.microservices.yml up
-```
-
-## 📊 Observability
-
-### OpenTelemetry
-All 10 services emit OTEL traces with distributed trace context propagation:
-
-- Trace IDs propagate: Supervisor → Agent → MCP → Backend
-- Each service reports: `service.name`, `service.version`
-- HTTP spans include: method, route, status code, duration
-
-### LangSmith Tracing
-Enable in `.env`:
-```env
+# Tracing (optional)
 LANGCHAIN_TRACING_V2=true
-LANGCHAIN_API_KEY=your_key
+LANGCHAIN_API_KEY=your-key
 LANGCHAIN_PROJECT=zta-testbed
 ```
 
-View traces at: https://smith.langchain.com
+## Troubleshooting
 
-## 🔐 Zero-Trust Architecture
+### Container won't start
+```bash
+# Check logs
+docker-compose -f docker-compose.microservices.yml logs [service-name]
 
-The microservices architecture enables implementing ZTA principles:
-
-### Current Implementation
-1. **Service Isolation**: Each agent runs in its own container
-2. **Identity Headers**: Agents propagate `x-agent-id` and `x-supervisor-id`
-3. **HTTP Boundaries**: All communication over HTTP for policy interception
-4. **Health Monitoring**: Continuous health checks on all services
-
-### Planned ZTA Enhancements
-- **Policy Decision Point (PDP)**: OPA/Rego policy engine
-- **Policy Enforcement Points (PEPs)**: Envoy sidecars between services
-- **mTLS**: Mutual TLS between all services
-- **JWT Authentication**: Token-based agent identity verification
-- **Audit Logging**: Request/response logging for compliance
-
-### ZTA Network Boundaries
-```
-┌─────────────┐     ┌─────┐     ┌─────────────┐
-│  Supervisor │────▶│ PEP │────▶│    Agent    │
-└─────────────┘     └─────┘     └─────────────┘
-                       │
-                       ▼
-                   ┌─────┐
-                   │ PDP │ (OPA)
-                   └─────┘
+# Rebuild specific service
+docker-compose -f docker-compose.microservices.yml up --build [service-name]
 ```
 
-## 📚 Documentation
+### MCP Session Errors
+If you see "Missing session ID" errors, the agent needs to reinitialize its MCP session:
+```bash
+# Restart the agent
+docker-compose -f docker-compose.microservices.yml restart airline-agent
+```
 
-- [Deployment Guide](docs/deployment_guide.pdf) - Comprehensive deployment instructions
-- [Architecture Justification](docs/supervisor_architecture_justification.pdf) - Academic rationale
-- [Literature Survey](docs/zero_trust_agent_lit_survey.docx) - Research background
+### Database Issues
+SQLite databases are created fresh on container start. To reset:
+```bash
+docker-compose -f docker-compose.microservices.yml down -v
+docker-compose -f docker-compose.microservices.yml up --build
+```
 
-## 🤝 Contributing
+## License
+
+MIT License - See LICENSE file for details.
+
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
 3. Make your changes
 4. Submit a pull request
 
-## 📄 License
+## Related Research
 
-MIT License - see [LICENSE](LICENSE) for details.
-
-## 🙏 Acknowledgments
-
-- [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration
-- [FastMCP](https://github.com/jlowin/fastmcp) - MCP server implementation
-- [FastAPI](https://fastapi.tiangolo.com/) - Backend services
-- [OpenTelemetry](https://opentelemetry.io/) - Distributed tracing
+This testbed supports research into:
+- Zero-Trust Architecture for AI agents
+- Multi-agent system security
+- Policy enforcement in LLM applications
+- Secure inter-agent communication patterns

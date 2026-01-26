@@ -1,16 +1,44 @@
 version: '3.8'
 
 # =============================================================================
-# ZTA Multi-Agent Testbed - Microservices Architecture
+# ZTA Multi-Agent Testbed - Microservices Architecture v2
 # =============================================================================
-# Each agent is now a separate container with its own identity
-# 
+# Includes:
+#   - Itinerary Service (SQLite) for user trips/bookings
+#   - Travel Planner (orchestrator with context awareness)
+#   - Worker Agents (airline, hotel, car-rental)
+#
 # Architecture:
-#   User → Supervisor → Worker Agents → MCP Servers → Backend Services
-#                (:8080)     (:8091-8093)   (:8010-8012)    (:8001-8003)
+#   User → Travel Planner → Worker Agents → MCP Servers → Backend Services
+#              (:8080)        (:8091-8093)   (:8010-8012)    (:8001-8003)
+#                 ↓
+#          Itinerary Service (:8084) → SQLite
 # =============================================================================
 
 services:
+  # ===========================================================================
+  # Itinerary Service (SQLite - User Trips & Bookings)
+  # ===========================================================================
+  
+  itinerary-service:
+    build:
+      context: ./services/itinerary
+      dockerfile: Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      - PORT=8084
+      - DATABASE_URL=sqlite:///./itinerary.db
+      - OTEL_SERVICE_NAME=itinerary-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - zta-network
+
   # ===========================================================================
   # Backend Services (FastAPI + SQLite)
   # ===========================================================================
@@ -198,28 +226,33 @@ services:
       - zta-network
 
   # ===========================================================================
-  # Supervisor Agent (Orchestrator)
+  # Travel Planner (Orchestrator with Context Awareness)
   # ===========================================================================
   
-  supervisor:
+  travel-planner:
     build:
-      context: ./agents/supervisor
+      context: ./agents/travel-planner
       dockerfile: Dockerfile
     ports:
       - "8080:8080"
     environment:
       - PORT=8080
+      - PLANNER_ID=travel-planner
+      - PLANNER_NAME=Travel Planner
       - AIRLINE_AGENT_URL=http://airline-agent:8091
       - HOTEL_AGENT_URL=http://hotel-agent:8092
       - CAR_RENTAL_AGENT_URL=http://car-rental-agent:8093
+      - ITINERARY_SERVICE_URL=http://itinerary-service:8084
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - GROQ_API_KEY=${GROQ_API_KEY}
       - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
       - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
       - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-zta-testbed}
-      - OTEL_SERVICE_NAME=supervisor
+      - OTEL_SERVICE_NAME=travel-planner
     depends_on:
+      itinerary-service:
+        condition: service_healthy
       airline-agent:
         condition: service_started
       hotel-agent:

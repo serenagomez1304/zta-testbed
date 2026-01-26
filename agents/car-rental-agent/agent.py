@@ -5,6 +5,7 @@ Connects to car-rental-mcp server for tool execution.
 """
 
 import os
+import json
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -52,14 +53,14 @@ class AgentResponse(BaseModel):
 # =============================================================================
 
 CAR_RENTAL_TOOLS = [
-    {"name": "list_locations", "description": "List all rental locations", "parameters": {}},
-    {"name": "search_vehicles", "description": "Search for available vehicles", "parameters": {"location_id": "Location ID", "pickup_date": "Pickup date", "return_date": "Return date"}},
+    {"name": "list_locations", "description": "List available rental locations", "parameters": {}},
+    {"name": "get_vehicle_categories", "description": "Get available vehicle categories", "parameters": {}},
+    {"name": "search_vehicles", "description": "Search for available vehicles", "parameters": {"location_id": "Location ID", "pickup_date": "Pickup date", "return_date": "Return date", "category": "Vehicle category"}},
     {"name": "get_vehicle_details", "description": "Get detailed information about a vehicle", "parameters": {"vehicle_id": "Vehicle ID"}},
-    {"name": "get_vehicle_categories", "description": "List vehicle categories", "parameters": {}},
     {"name": "book_vehicle", "description": "Book a rental vehicle", "parameters": {"vehicle_id": "Vehicle ID", "pickup_date": "Pickup date", "return_date": "Return date", "driver_name": "Driver name"}},
     {"name": "get_rental", "description": "Get rental details", "parameters": {"rental_id": "Rental ID"}},
-    {"name": "modify_rental", "description": "Modify an existing rental", "parameters": {"rental_id": "Rental ID", "return_date": "New return date"}},
-    {"name": "cancel_rental", "description": "Cancel a vehicle rental", "parameters": {"rental_id": "Rental ID"}}
+    {"name": "modify_rental", "description": "Modify a rental booking", "parameters": {"rental_id": "Rental ID", "new_return_date": "New return date"}},
+    {"name": "cancel_rental", "description": "Cancel a rental booking", "parameters": {"rental_id": "Rental ID"}}
 ]
 
 # =============================================================================
@@ -72,6 +73,7 @@ class CarRentalAgent:
         self.agent_name = AGENT_NAME
         self.mcp_server_url = MCP_SERVER_URL
         self.mcp_client: Optional[httpx.AsyncClient] = None
+        self.mcp_session_id: Optional[str] = None
         self.llm = None
         self.tools = CAR_RENTAL_TOOLS
         self.metrics = {
@@ -86,19 +88,51 @@ class CarRentalAgent:
             timeout=60.0,
             headers={"x-agent-id": self.agent_id, "x-agent-name": self.agent_name}
         )
+        await self._init_mcp_session()
         self._setup_llm()
         logger.info(f"{self.agent_name} initialized with {len(self.tools)} tools")
+    
+    async def _init_mcp_session(self):
+        """Initialize MCP session with the server"""
+        try:
+            response = await self.mcp_client.post(
+                f"{self.mcp_server_url}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": self.agent_id, "version": "1.0.0"}
+                    },
+                    "id": f"{self.agent_id}-init"
+                },
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json"
+                }
+            )
+            self.mcp_session_id = response.headers.get("mcp-session-id")
+            if self.mcp_session_id:
+                logger.info(f"MCP session initialized: {self.mcp_session_id}")
+            else:
+                logger.warning("MCP session ID not found in response headers")
+        except Exception as e:
+            logger.warning(f"Could not initialize MCP session: {e}")
     
     def _setup_llm(self):
         if ANTHROPIC_API_KEY:
             from langchain_anthropic import ChatAnthropic
             self.llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", api_key=ANTHROPIC_API_KEY)
+            logger.info("Using Anthropic Claude")
         elif OPENAI_API_KEY:
             from langchain_openai import ChatOpenAI
             self.llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
+            logger.info("Using OpenAI GPT-4")
         elif GROQ_API_KEY:
             from langchain_groq import ChatGroq
             self.llm = ChatGroq(model="llama-3.1-70b-versatile", api_key=GROQ_API_KEY)
+            logger.info("Using Groq")
     
     async def shutdown(self):
         if self.mcp_client:
@@ -107,14 +141,52 @@ class CarRentalAgent:
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         logger.info(f"Calling tool: {tool_name} with args: {arguments}")
         self.metrics["tools_called"] += 1
+        
+        if not self.mcp_session_id:
+            await self._init_mcp_session()
+        
         try:
+            headers = {
+                "x-agent-id": self.agent_id,
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json"
+            }
+            if self.mcp_session_id:
+                headers["mcp-session-id"] = self.mcp_session_id
+            
             response = await self.mcp_client.post(
                 f"{self.mcp_server_url}/mcp",
-                json={"jsonrpc": "2.0", "method": "tools/call", "params": {"name": tool_name, "arguments": arguments}, "id": f"{self.agent_id}-{datetime.utcnow().timestamp()}"},
-                headers={"x-agent-id": self.agent_id}
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments},
+                    "id": f"{self.agent_id}-{datetime.utcnow().timestamp()}"
+                },
+                headers=headers
             )
+            
             if response.status_code == 200:
-                return response.json().get("result", response.json())
+                text = response.text
+                if text.startswith("event:"):
+                    for line in text.split("\n"):
+                        if line.startswith("data:"):
+                            json_data = line[5:].strip()
+                            if json_data:
+                                try:
+                                    result = json.loads(json_data)
+                                    if "result" in result:
+                                        return result["result"]
+                                    elif "error" in result:
+                                        return {"error": result["error"].get("message", str(result["error"]))}
+                                    return result
+                                except json.JSONDecodeError:
+                                    return {"error": f"Invalid JSON: {json_data[:100]}"}
+                    return {"error": "No data in SSE response"}
+                else:
+                    return response.json().get("result", response.json())
+            
+            if response.status_code == 400:
+                self.mcp_session_id = None
             return {"error": f"Tool call failed: {response.status_code}"}
         except Exception as e:
             logger.error(f"Error calling tool {tool_name}: {e}")
@@ -136,35 +208,36 @@ class CarRentalAgent:
                 tools_called.append("get_vehicle_categories")
                 return AgentResponse(success=True, message="Vehicle categories", data={"categories": result}, tools_called=tools_called)
             
-            elif "search" in message_lower and ("car" in message_lower or "vehicle" in message_lower):
-                location_id = request.context.get("location_id", 1)
-                result = await self.call_tool("search_vehicles", {"location_id": location_id})
+            elif "search" in message_lower or "find" in message_lower or ("car" in message_lower and "rent" in message_lower):
+                pickup_location_code = request.context.get("pickup_location_code", request.context.get("location_code", "LAX"))
+                pickup_date = request.context.get("pickup_date", "2026-02-15")
+                dropoff_date = request.context.get("dropoff_date", request.context.get("return_date", "2026-02-17"))
+                category = request.context.get("category")
+                
+                args = {
+                    "pickup_location_code": pickup_location_code,
+                    "pickup_date": pickup_date,
+                    "dropoff_date": dropoff_date
+                }
+                if category:
+                    args["category"] = category
+                
+                result = await self.call_tool("search_vehicles", args)
                 tools_called.append("search_vehicles")
                 return AgentResponse(success=True, message="Available vehicles", data={"vehicles": result}, tools_called=tools_called)
             
-            elif "book" in message_lower and ("car" in message_lower or "vehicle" in message_lower or "rental" in message_lower):
+            elif "book" in message_lower or "reserve" in message_lower:
                 vehicle_id = request.context.get("vehicle_id")
                 if not vehicle_id:
                     return AgentResponse(success=False, message="Please provide vehicle_id", error="missing_vehicle_id")
                 result = await self.call_tool("book_vehicle", {
                     "vehicle_id": vehicle_id,
-                    "pickup_date": request.context.get("pickup_date", "2026-02-01"),
-                    "return_date": request.context.get("return_date", "2026-02-05"),
+                    "pickup_date": request.context.get("pickup_date", "2026-02-15"),
+                    "return_date": request.context.get("return_date", "2026-02-17"),
                     "driver_name": request.context.get("driver_name", "Guest")
                 })
                 tools_called.append("book_vehicle")
-                return AgentResponse(success=True, message="Vehicle booked", data={"rental": result}, tools_called=tools_called)
-            
-            elif "modify" in message_lower:
-                rental_id = request.context.get("rental_id")
-                if not rental_id:
-                    return AgentResponse(success=False, message="Please provide rental_id", error="missing_rental_id")
-                result = await self.call_tool("modify_rental", {
-                    "rental_id": rental_id,
-                    "return_date": request.context.get("return_date", "2026-02-07")
-                })
-                tools_called.append("modify_rental")
-                return AgentResponse(success=True, message="Rental modified", data={"rental": result}, tools_called=tools_called)
+                return AgentResponse(success=True, message="Vehicle booked", data={"booking": result}, tools_called=tools_called)
             
             elif "cancel" in message_lower:
                 rental_id = request.context.get("rental_id")
@@ -174,64 +247,85 @@ class CarRentalAgent:
                 tools_called.append("cancel_rental")
                 return AgentResponse(success=True, message="Rental cancelled", data={"result": result}, tools_called=tools_called)
             
-            return AgentResponse(success=True, message=f"I'm the Car Rental Agent. I can help with searching vehicles, bookings, and rental management.", data={"available_tools": [t["name"] for t in self.tools]})
+            elif "modify" in message_lower or "change" in message_lower or "extend" in message_lower:
+                rental_id = request.context.get("rental_id")
+                new_return_date = request.context.get("new_return_date")
+                if not rental_id or not new_return_date:
+                    return AgentResponse(success=False, message="Please provide rental_id and new_return_date", error="missing_parameters")
+                result = await self.call_tool("modify_rental", {"rental_id": rental_id, "new_return_date": new_return_date})
+                tools_called.append("modify_rental")
+                return AgentResponse(success=True, message="Rental modified", data={"result": result}, tools_called=tools_called)
+            
+            elif "detail" in message_lower or "info" in message_lower:
+                vehicle_id = request.context.get("vehicle_id")
+                if not vehicle_id:
+                    return AgentResponse(success=False, message="Please provide vehicle_id", error="missing_vehicle_id")
+                result = await self.call_tool("get_vehicle_details", {"vehicle_id": vehicle_id})
+                tools_called.append("get_vehicle_details")
+                return AgentResponse(success=True, message="Vehicle details", data={"vehicle": result}, tools_called=tools_called)
+            
+            else:
+                result = await self.call_tool("list_locations", {})
+                tools_called.append("list_locations")
+                return AgentResponse(success=True, message="Available rental locations", data={"locations": result}, tools_called=tools_called)
+                
         except Exception as e:
-            return AgentResponse(success=False, message="Error processing request", error=str(e), tools_called=tools_called)
+            logger.error(f"Error processing request: {e}")
+            return AgentResponse(success=False, message=str(e), error=str(e))
     
     def health_check(self) -> Dict[str, Any]:
-        return {"status": "healthy", "agent_id": self.agent_id, "agent_name": self.agent_name, "mcp_server": self.mcp_server_url, "tools_count": len(self.tools), "timestamp": datetime.utcnow().isoformat()}
-    
-    def get_metrics(self) -> Dict[str, Any]:
-        return {**self.metrics, "agent_id": self.agent_id, "uptime_seconds": (datetime.utcnow() - datetime.fromisoformat(self.metrics["start_time"])).total_seconds()}
+        return {
+            "status": "healthy",
+            "agent_id": self.agent_id,
+            "agent_name": self.agent_name,
+            "mcp_session": self.mcp_session_id is not None,
+            "tools_count": len(self.tools),
+            "timestamp": datetime.utcnow().isoformat()
+        }
     
     def get_tools(self) -> List[Dict[str, Any]]:
         return self.tools
 
 # =============================================================================
-# FastAPI Application
+# FastAPI App
 # =============================================================================
 
-agent = CarRentalAgent()
+agent: Optional[CarRentalAgent] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global agent
+    agent = CarRentalAgent()
     await agent.initialize()
     yield
     await agent.shutdown()
 
-app = FastAPI(title="Car Rental Agent API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Car Rental Agent", version="1.0.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
     return agent.health_check()
 
-@app.get("/metrics")
-async def metrics():
-    return agent.get_metrics()
-
 @app.get("/tools")
 async def tools():
-    return {"agent_id": agent.agent_id, "tools": agent.get_tools()}
+    return {"tools": agent.get_tools()}
 
 @app.post("/invoke", response_model=AgentResponse)
 async def invoke(request: AgentRequest, http_request: Request):
+    supervisor_id = http_request.headers.get("x-supervisor-id", "unknown")
+    logger.info(f"Request from supervisor={supervisor_id}: {request.message[:50]}...")
     agent.metrics["requests_total"] += 1
-    try:
-        response = await agent.process_request(request)
-        if response.success:
-            agent.metrics["requests_success"] += 1
-        else:
-            agent.metrics["requests_failed"] += 1
-        return response
-    except Exception as e:
+    response = await agent.process_request(request)
+    if response.success:
+        agent.metrics["requests_success"] += 1
+    else:
         agent.metrics["requests_failed"] += 1
-        return AgentResponse(success=False, message="Agent error", error=str(e))
+    return response
 
 @app.get("/identity")
 async def identity():
-    return {"agent_id": agent.agent_id, "agent_name": agent.agent_name, "agent_type": "worker", "domain": "car-rental", "capabilities": [t["name"] for t in agent.get_tools()]}
+    return {"agent_id": agent.agent_id, "agent_name": agent.agent_name, "tools": [t["name"] for t in agent.get_tools()]}
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", "8093"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8093")))

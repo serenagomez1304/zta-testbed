@@ -5,6 +5,7 @@ Connects to hotel-mcp server for tool execution.
 """
 
 import os
+import json
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -70,6 +71,7 @@ class HotelAgent:
         self.agent_name = AGENT_NAME
         self.mcp_server_url = MCP_SERVER_URL
         self.mcp_client: Optional[httpx.AsyncClient] = None
+        self.mcp_session_id: Optional[str] = None
         self.llm = None
         self.tools = HOTEL_TOOLS
         self.metrics = {
@@ -84,19 +86,51 @@ class HotelAgent:
             timeout=60.0,
             headers={"x-agent-id": self.agent_id, "x-agent-name": self.agent_name}
         )
+        await self._init_mcp_session()
         self._setup_llm()
         logger.info(f"{self.agent_name} initialized with {len(self.tools)} tools")
+    
+    async def _init_mcp_session(self):
+        """Initialize MCP session with the server"""
+        try:
+            response = await self.mcp_client.post(
+                f"{self.mcp_server_url}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": self.agent_id, "version": "1.0.0"}
+                    },
+                    "id": f"{self.agent_id}-init"
+                },
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json"
+                }
+            )
+            self.mcp_session_id = response.headers.get("mcp-session-id")
+            if self.mcp_session_id:
+                logger.info(f"MCP session initialized: {self.mcp_session_id}")
+            else:
+                logger.warning("MCP session ID not found in response headers")
+        except Exception as e:
+            logger.warning(f"Could not initialize MCP session: {e}")
     
     def _setup_llm(self):
         if ANTHROPIC_API_KEY:
             from langchain_anthropic import ChatAnthropic
             self.llm = ChatAnthropic(model="claude-3-5-sonnet-20241022", api_key=ANTHROPIC_API_KEY)
+            logger.info("Using Anthropic Claude")
         elif OPENAI_API_KEY:
             from langchain_openai import ChatOpenAI
             self.llm = ChatOpenAI(model="gpt-4o-mini", api_key=OPENAI_API_KEY)
+            logger.info("Using OpenAI GPT-4")
         elif GROQ_API_KEY:
             from langchain_groq import ChatGroq
             self.llm = ChatGroq(model="llama-3.1-70b-versatile", api_key=GROQ_API_KEY)
+            logger.info("Using Groq")
     
     async def shutdown(self):
         if self.mcp_client:
@@ -105,14 +139,52 @@ class HotelAgent:
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         logger.info(f"Calling tool: {tool_name} with args: {arguments}")
         self.metrics["tools_called"] += 1
+        
+        if not self.mcp_session_id:
+            await self._init_mcp_session()
+        
         try:
+            headers = {
+                "x-agent-id": self.agent_id,
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json"
+            }
+            if self.mcp_session_id:
+                headers["mcp-session-id"] = self.mcp_session_id
+            
             response = await self.mcp_client.post(
                 f"{self.mcp_server_url}/mcp",
-                json={"jsonrpc": "2.0", "method": "tools/call", "params": {"name": tool_name, "arguments": arguments}, "id": f"{self.agent_id}-{datetime.utcnow().timestamp()}"},
-                headers={"x-agent-id": self.agent_id}
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "tools/call",
+                    "params": {"name": tool_name, "arguments": arguments},
+                    "id": f"{self.agent_id}-{datetime.utcnow().timestamp()}"
+                },
+                headers=headers
             )
+            
             if response.status_code == 200:
-                return response.json().get("result", response.json())
+                text = response.text
+                if text.startswith("event:"):
+                    for line in text.split("\n"):
+                        if line.startswith("data:"):
+                            json_data = line[5:].strip()
+                            if json_data:
+                                try:
+                                    result = json.loads(json_data)
+                                    if "result" in result:
+                                        return result["result"]
+                                    elif "error" in result:
+                                        return {"error": result["error"].get("message", str(result["error"]))}
+                                    return result
+                                except json.JSONDecodeError:
+                                    return {"error": f"Invalid JSON: {json_data[:100]}"}
+                    return {"error": "No data in SSE response"}
+                else:
+                    return response.json().get("result", response.json())
+            
+            if response.status_code == 400:
+                self.mcp_session_id = None
             return {"error": f"Tool call failed: {response.status_code}"}
         except Exception as e:
             logger.error(f"Error calling tool {tool_name}: {e}")
@@ -129,13 +201,39 @@ class HotelAgent:
                 tools_called.append("list_cities")
                 return AgentResponse(success=True, message="Available cities", data={"cities": result}, tools_called=tools_called)
             
-            elif "search" in message_lower and "hotel" in message_lower:
-                city = request.context.get("city", "New York")
-                result = await self.call_tool("search_hotels", {"city": city})
+            elif "search" in message_lower or "find" in message_lower or "hotel" in message_lower:
+                # Try to extract city from message
+                city_code = request.context.get("city_code")
+                if not city_code:
+                    # Map common city names to codes
+                    city_map = {
+                        "miami": "MIA", "new york": "NYC", "los angeles": "LAX", "lax": "LAX",
+                        "chicago": "CHI", "san francisco": "SFO", "seattle": "SEA",
+                        "boston": "BOS", "denver": "DEN", "atlanta": "ATL"
+                    }
+                    for city_name, code in city_map.items():
+                        if city_name in message_lower:
+                            city_code = code
+                            break
+                    if not city_code:
+                        city_code = request.context.get("city", "MIA")
+                        # If it's a full name, try to map it
+                        if city_code.lower() in city_map:
+                            city_code = city_map[city_code.lower()]
+                
+                check_in_date = request.context.get("check_in_date", request.context.get("check_in", "2026-02-15"))
+                check_out_date = request.context.get("check_out_date", request.context.get("check_out", "2026-02-17"))
+                guests = request.context.get("guests", 1)
+                result = await self.call_tool("search_hotels", {
+                    "city_code": city_code,
+                    "check_in_date": check_in_date,
+                    "check_out_date": check_out_date,
+                    "guests": guests
+                })
                 tools_called.append("search_hotels")
-                return AgentResponse(success=True, message=f"Hotels in {city}", data={"hotels": result}, tools_called=tools_called)
+                return AgentResponse(success=True, message=f"Hotels in {city_code}", data={"hotels": result}, tools_called=tools_called)
             
-            elif "book" in message_lower and "hotel" in message_lower:
+            elif "book" in message_lower:
                 hotel_id = request.context.get("hotel_id")
                 if not hotel_id:
                     return AgentResponse(success=False, message="Please provide hotel_id", error="missing_hotel_id")
@@ -147,7 +245,7 @@ class HotelAgent:
                     "guest_name": request.context.get("guest_name", "Guest")
                 })
                 tools_called.append("book_hotel")
-                return AgentResponse(success=True, message="Hotel booked", data={"reservation": result}, tools_called=tools_called)
+                return AgentResponse(success=True, message="Hotel booked", data={"booking": result}, tools_called=tools_called)
             
             elif "cancel" in message_lower:
                 reservation_id = request.context.get("reservation_id")
@@ -157,64 +255,76 @@ class HotelAgent:
                 tools_called.append("cancel_reservation")
                 return AgentResponse(success=True, message="Reservation cancelled", data={"result": result}, tools_called=tools_called)
             
-            return AgentResponse(success=True, message=f"I'm the Hotel Agent. I can help with hotel searches, bookings, and reservations.", data={"available_tools": [t["name"] for t in self.tools]})
+            elif "detail" in message_lower or "info" in message_lower:
+                hotel_id = request.context.get("hotel_id")
+                if not hotel_id:
+                    return AgentResponse(success=False, message="Please provide hotel_id", error="missing_hotel_id")
+                result = await self.call_tool("get_hotel_details", {"hotel_id": hotel_id})
+                tools_called.append("get_hotel_details")
+                return AgentResponse(success=True, message="Hotel details", data={"hotel": result}, tools_called=tools_called)
+            
+            else:
+                result = await self.call_tool("list_cities", {})
+                tools_called.append("list_cities")
+                return AgentResponse(success=True, message="Available cities for hotels", data={"cities": result}, tools_called=tools_called)
+                
         except Exception as e:
-            return AgentResponse(success=False, message="Error processing request", error=str(e), tools_called=tools_called)
+            logger.error(f"Error processing request: {e}")
+            return AgentResponse(success=False, message=str(e), error=str(e))
     
     def health_check(self) -> Dict[str, Any]:
-        return {"status": "healthy", "agent_id": self.agent_id, "agent_name": self.agent_name, "mcp_server": self.mcp_server_url, "tools_count": len(self.tools), "timestamp": datetime.utcnow().isoformat()}
-    
-    def get_metrics(self) -> Dict[str, Any]:
-        return {**self.metrics, "agent_id": self.agent_id, "uptime_seconds": (datetime.utcnow() - datetime.fromisoformat(self.metrics["start_time"])).total_seconds()}
+        return {
+            "status": "healthy",
+            "agent_id": self.agent_id,
+            "agent_name": self.agent_name,
+            "mcp_session": self.mcp_session_id is not None,
+            "tools_count": len(self.tools),
+            "timestamp": datetime.utcnow().isoformat()
+        }
     
     def get_tools(self) -> List[Dict[str, Any]]:
         return self.tools
 
 # =============================================================================
-# FastAPI Application
+# FastAPI App
 # =============================================================================
 
-agent = HotelAgent()
+agent: Optional[HotelAgent] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global agent
+    agent = HotelAgent()
     await agent.initialize()
     yield
     await agent.shutdown()
 
-app = FastAPI(title="Hotel Agent API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Hotel Agent", version="1.0.0", lifespan=lifespan)
 
 @app.get("/health")
 async def health():
     return agent.health_check()
 
-@app.get("/metrics")
-async def metrics():
-    return agent.get_metrics()
-
 @app.get("/tools")
 async def tools():
-    return {"agent_id": agent.agent_id, "tools": agent.get_tools()}
+    return {"tools": agent.get_tools()}
 
 @app.post("/invoke", response_model=AgentResponse)
 async def invoke(request: AgentRequest, http_request: Request):
+    supervisor_id = http_request.headers.get("x-supervisor-id", "unknown")
+    logger.info(f"Request from supervisor={supervisor_id}: {request.message[:50]}...")
     agent.metrics["requests_total"] += 1
-    try:
-        response = await agent.process_request(request)
-        if response.success:
-            agent.metrics["requests_success"] += 1
-        else:
-            agent.metrics["requests_failed"] += 1
-        return response
-    except Exception as e:
+    response = await agent.process_request(request)
+    if response.success:
+        agent.metrics["requests_success"] += 1
+    else:
         agent.metrics["requests_failed"] += 1
-        return AgentResponse(success=False, message="Agent error", error=str(e))
+    return response
 
 @app.get("/identity")
 async def identity():
-    return {"agent_id": agent.agent_id, "agent_name": agent.agent_name, "agent_type": "worker", "domain": "hotel", "capabilities": [t["name"] for t in agent.get_tools()]}
+    return {"agent_id": agent.agent_id, "agent_name": agent.agent_name, "tools": [t["name"] for t in agent.get_tools()]}
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", "8092"))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8092")))

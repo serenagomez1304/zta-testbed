@@ -6,6 +6,7 @@ Connects to airline-mcp server for tool execution.
 
 import os
 import sys
+import json
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
@@ -126,6 +127,7 @@ class AirlineAgent:
         self.agent_name = AGENT_NAME
         self.mcp_server_url = MCP_SERVER_URL
         self.mcp_client: Optional[httpx.AsyncClient] = None
+        self.mcp_session_id: Optional[str] = None  # MCP session ID
         self.llm = None
         self.tools = AIRLINE_TOOLS
         self.metrics = {
@@ -150,20 +152,51 @@ class AirlineAgent:
             }
         )
         
-        # Verify MCP connection
-        try:
-            response = await self.mcp_client.get(f"{self.mcp_server_url}/health")
-            if response.status_code == 200:
-                logger.info(f"Connected to MCP server at {self.mcp_server_url}")
-            else:
-                logger.warning(f"MCP health check returned {response.status_code}")
-        except Exception as e:
-            logger.warning(f"Could not connect to MCP server: {e}")
+        # Initialize MCP session
+        await self._init_mcp_session()
         
         # Setup LLM
         self._setup_llm()
         
         logger.info(f"{self.agent_name} initialized with {len(self.tools)} tools")
+    
+    async def _init_mcp_session(self):
+        """Initialize MCP session with the server"""
+        try:
+            response = await self.mcp_client.post(
+                f"{self.mcp_server_url}/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {"name": self.agent_id, "version": "1.0.0"}
+                    },
+                    "id": f"{self.agent_id}-init"
+                },
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json"
+                }
+            )
+            
+            # Extract session ID from response header
+            self.mcp_session_id = response.headers.get("mcp-session-id")
+            
+            if self.mcp_session_id:
+                logger.info(f"MCP session initialized: {self.mcp_session_id}")
+            else:
+                logger.warning("MCP session ID not found in response headers")
+                
+            # Check response content
+            if response.status_code == 200:
+                logger.info(f"Connected to MCP server at {self.mcp_server_url}")
+            else:
+                logger.warning(f"MCP init returned {response.status_code}")
+                
+        except Exception as e:
+            logger.warning(f"Could not initialize MCP session: {e}")
     
     def _setup_llm(self):
         """Setup the LLM based on available API keys"""
@@ -206,7 +239,20 @@ class AirlineAgent:
         start_time = datetime.utcnow()
         self.metrics["tools_called"] += 1
         
+        # Re-initialize session if needed
+        if not self.mcp_session_id:
+            await self._init_mcp_session()
+        
         try:
+            # Build headers with session ID
+            headers = {
+                "x-agent-id": self.agent_id,
+                "Accept": "application/json, text/event-stream",
+                "Content-Type": "application/json"
+            }
+            if self.mcp_session_id:
+                headers["mcp-session-id"] = self.mcp_session_id
+            
             # Make MCP tool call
             response = await self.mcp_client.post(
                 f"{self.mcp_server_url}/mcp",
@@ -219,19 +265,41 @@ class AirlineAgent:
                     },
                     "id": f"{self.agent_id}-{datetime.utcnow().timestamp()}"
                 },
-                headers={
-                    "x-agent-id": self.agent_id
-                }
+                headers=headers
             )
             
             duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
             
             if response.status_code == 200:
-                result = response.json()
-                logger.info(f"Tool {tool_name} succeeded in {duration_ms:.2f}ms")
-                return result.get("result", result)
+                # Parse SSE response
+                text = response.text
+                if text.startswith("event:"):
+                    # Extract JSON from SSE format
+                    for line in text.split("\n"):
+                        if line.startswith("data:"):
+                            json_data = line[5:].strip()
+                            if json_data:
+                                try:
+                                    result = json.loads(json_data)
+                                    logger.info(f"Tool {tool_name} succeeded in {duration_ms:.2f}ms")
+                                    if "result" in result:
+                                        return result["result"]
+                                    elif "error" in result:
+                                        return {"error": result["error"].get("message", str(result["error"]))}
+                                    return result
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"Failed to parse SSE response: {e}")
+                                    return {"error": f"Invalid JSON response: {json_data[:100]}"}
+                    return {"error": "No data in SSE response"}
+                else:
+                    result = response.json()
+                    logger.info(f"Tool {tool_name} succeeded in {duration_ms:.2f}ms")
+                    return result.get("result", result)
             else:
                 logger.error(f"Tool {tool_name} failed: {response.status_code} - {response.text}")
+                # Session might have expired, clear it
+                if response.status_code == 400:
+                    self.mcp_session_id = None
                 return {"error": f"Tool call failed: {response.status_code}"}
                 
         except Exception as e:
@@ -265,11 +333,17 @@ class AirlineAgent:
                 # Extract origin/destination from context or message
                 origin = request.context.get("origin", "JFK")
                 destination = request.context.get("destination", "LAX")
-                date = request.context.get("date")
+                departure_date = request.context.get("departure_date") or request.context.get("date", "2026-02-15")
+                passengers = request.context.get("passengers", 1)
+                cabin_class = request.context.get("cabin_class", "economy")
                 
-                args = {"origin": origin, "destination": destination}
-                if date:
-                    args["date"] = date
+                args = {
+                    "origin": origin,
+                    "destination": destination,
+                    "departure_date": departure_date,
+                    "passengers": passengers,
+                    "cabin_class": cabin_class
+                }
                 
                 result = await self.call_tool("search_flights", args)
                 tools_called.append("search_flights")
