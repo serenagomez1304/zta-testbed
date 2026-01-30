@@ -1,0 +1,161 @@
+# =============================================================================
+# Envoy Sidecar Configuration - Travel Planner (with mTLS)
+# =============================================================================
+# Inbound: Plain HTTP from user (no client cert required)
+# Outbound: mTLS to worker agents
+# =============================================================================
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+    # Inbound - User requests (plain HTTP, no mTLS for external users)
+    - name: inbound_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10000
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: inbound_http
+                codec_type: AUTO
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          direction: "inbound"
+                          service: "travel-planner"
+                          source_ip: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          response_code: "%RESPONSE_CODE%"
+                          duration_ms: "%DURATION%"
+                route_config:
+                  name: inbound_route
+                  virtual_hosts:
+                    - name: travel_planner
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: travel_planner_local
+                            timeout: 120s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    # Local travel-planner service
+    - name: travel_planner_local
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: travel_planner_local
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: travel-planner
+                      port_value: 8080
+
+    # Worker agents with mTLS
+    - name: airline_agent_cluster
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: airline_agent_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: airline-agent-envoy
+                      port_value: 10000
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain:
+                  filename: /etc/envoy/certs/travel-planner-cert.pem
+                private_key:
+                  filename: /etc/envoy/certs/travel-planner-key.pem
+            validation_context:
+              trusted_ca:
+                filename: /etc/envoy/certs/ca-cert.pem
+              match_subject_alt_names:
+                - exact: "airline-agent"
+
+    - name: hotel_agent_cluster
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: hotel_agent_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: hotel-agent-envoy
+                      port_value: 10000
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain:
+                  filename: /etc/envoy/certs/travel-planner-cert.pem
+                private_key:
+                  filename: /etc/envoy/certs/travel-planner-key.pem
+            validation_context:
+              trusted_ca:
+                filename: /etc/envoy/certs/ca-cert.pem
+              match_subject_alt_names:
+                - exact: "hotel-agent"
+
+    - name: car_rental_agent_cluster
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: car_rental_agent_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: car-rental-agent-envoy
+                      port_value: 10000
+      transport_socket:
+        name: envoy.transport_sockets.tls
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
+          common_tls_context:
+            tls_certificates:
+              - certificate_chain:
+                  filename: /etc/envoy/certs/travel-planner-cert.pem
+                private_key:
+                  filename: /etc/envoy/certs/travel-planner-key.pem
+            validation_context:
+              trusted_ca:
+                filename: /etc/envoy/certs/ca-cert.pem
+              match_subject_alt_names:
+                - exact: "car-rental-agent"

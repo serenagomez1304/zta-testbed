@@ -1,0 +1,79 @@
+# Envoy Sidecar - Airline MCP (mTLS Required)
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+    - name: inbound_mtls_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10000
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: inbound_https
+                codec_type: AUTO
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          service: "airline-mcp"
+                          tls_version: "%DOWNSTREAM_TLS_VERSION%"
+                          peer_cert: "%DOWNSTREAM_PEER_SUBJECT%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          response_code: "%RESPONSE_CODE%"
+                          agent_id: "%REQ(X-AGENT-ID)%"
+                route_config:
+                  name: inbound_route
+                  virtual_hosts:
+                    - name: airline_mcp
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: airline_mcp_local
+                            timeout: 60s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          transport_socket:
+            name: envoy.transport_sockets.tls
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.DownstreamTlsContext
+              require_client_certificate: true
+              common_tls_context:
+                tls_certificates:
+                  - certificate_chain:
+                      filename: /etc/envoy/certs/airline-mcp-cert.pem
+                    private_key:
+                      filename: /etc/envoy/certs/airline-mcp-key.pem
+                validation_context:
+                  trusted_ca:
+                    filename: /etc/envoy/certs/ca-cert.pem
+
+  clusters:
+    - name: airline_mcp_local
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: airline_mcp_local
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: airline-mcp
+                      port_value: 8010

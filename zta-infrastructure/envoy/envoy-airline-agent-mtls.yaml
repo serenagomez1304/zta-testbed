@@ -1,0 +1,91 @@
+# =============================================================================
+# Envoy Sidecar Configuration - Airline Agent (Hybrid mTLS)
+# =============================================================================
+# Inbound: Plain HTTP (from Travel Planner - same trust zone)
+# Outbound: mTLS (to Airline MCP Envoy - cross trust zone)
+# =============================================================================
+
+admin:
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901
+
+static_resources:
+  listeners:
+    # =========================================================================
+    # Inbound Listener (HTTP) - Receives requests from Travel Planner
+    # =========================================================================
+    - name: inbound_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 10000
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: inbound_http
+                codec_type: AUTO
+                access_log:
+                  - name: envoy.access_loggers.stdout
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                      log_format:
+                        json_format:
+                          timestamp: "%START_TIME%"
+                          direction: "inbound"
+                          service: "airline-agent"
+                          source_ip: "%DOWNSTREAM_REMOTE_ADDRESS%"
+                          method: "%REQ(:METHOD)%"
+                          path: "%REQ(:PATH)%"
+                          response_code: "%RESPONSE_CODE%"
+                          duration_ms: "%DURATION%"
+                          agent_id: "%REQ(X-AGENT-ID)%"
+                route_config:
+                  name: inbound_route
+                  virtual_hosts:
+                    - name: airline_agent
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            prefix: "/"
+                          route:
+                            cluster: airline_agent_local
+                            timeout: 60s
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+  clusters:
+    # Local airline-agent service (plaintext - same pod/container)
+    - name: airline_agent_local
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: airline_agent_local
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: airline-agent
+                      port_value: 8091
+
+    # Airline MCP (HTTP - same network)
+    - name: airline_mcp_cluster
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: airline_mcp_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: airline-mcp-envoy
+                      port_value: 10000

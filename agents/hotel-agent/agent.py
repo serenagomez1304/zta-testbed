@@ -25,6 +25,11 @@ MCP_SERVER_URL = os.getenv("HOTEL_MCP_URL", "http://hotel-mcp:8011")
 AGENT_ID = "hotel-agent"
 AGENT_NAME = "Hotel Agent"
 
+# mTLS Configuration
+CA_CERT_PATH = os.getenv("CA_CERT_PATH", "")
+CLIENT_CERT_PATH = os.getenv("CLIENT_CERT_PATH", "")
+CLIENT_KEY_PATH = os.getenv("CLIENT_KEY_PATH", "")
+
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
@@ -82,9 +87,23 @@ class HotelAgent:
     
     async def initialize(self):
         logger.info(f"Initializing {self.agent_name}...")
+        
+        # Configure mTLS if certificates are provided
+        ssl_context = None
+        if CA_CERT_PATH and CLIENT_CERT_PATH and CLIENT_KEY_PATH:
+            if os.path.exists(CA_CERT_PATH) and os.path.exists(CLIENT_CERT_PATH) and os.path.exists(CLIENT_KEY_PATH):
+                import ssl
+                ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+                ssl_context.load_verify_locations(CA_CERT_PATH)
+                ssl_context.load_cert_chain(CLIENT_CERT_PATH, CLIENT_KEY_PATH)
+                logger.info(f"mTLS enabled with certificates from {CLIENT_CERT_PATH}")
+            else:
+                logger.warning("mTLS cert paths configured but files not found, using plain HTTP")
+        
         self.mcp_client = httpx.AsyncClient(
             timeout=60.0,
-            headers={"x-agent-id": self.agent_id, "x-agent-name": self.agent_name}
+            headers={"x-agent-id": self.agent_id, "x-agent-name": self.agent_name},
+            verify=ssl_context if ssl_context else True
         )
         await self._init_mcp_session()
         self._setup_llm()
