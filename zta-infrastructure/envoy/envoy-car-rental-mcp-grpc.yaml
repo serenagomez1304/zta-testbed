@@ -1,4 +1,4 @@
-# Envoy Sidecar - Airline MCP (mTLS + ext_authz) - FIXED
+# Envoy Sidecar - Car Rental MCP (mTLS + gRPC ext_authz)
 admin:
   address:
     socket_address:
@@ -26,24 +26,25 @@ static_resources:
                       log_format:
                         json_format:
                           timestamp: "%START_TIME%"
-                          service: "airline-mcp"
+                          service: "car-rental-mcp"
                           tls_version: "%DOWNSTREAM_TLS_VERSION%"
                           peer_cert: "%DOWNSTREAM_PEER_SUBJECT%"
                           method: "%REQ(:METHOD)%"
                           path: "%REQ(:PATH)%"
                           response_code: "%RESPONSE_CODE%"
+                          response_flags: "%RESPONSE_FLAGS%"
                           agent_id: "%REQ(X-AGENT-ID)%"
                 
                 route_config:
                   name: inbound_route
                   virtual_hosts:
-                    - name: airline_mcp
+                    - name: car_rental_mcp
                       domains: ["*"]
                       routes:
                         - match:
                             prefix: "/"
                           route:
-                            cluster: airline_mcp_local
+                            cluster: car_rental_mcp_local
                             timeout: 60s
                 
                 http_filters:
@@ -51,23 +52,14 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
                       transport_api_version: V3
-                      http_service:
-                        server_uri:
-                          uri: opa:8181
-                          cluster: opa_cluster
-                          timeout: 5s
-                        # FIXED: Query /allow to get boolean
-                        path_prefix: "/v1/data/zta/authz/allow"
-                        authorization_request:
-                          allowed_headers:
-                            patterns:
-                              - exact: "x-agent-id"
-                              - exact: "x-agent-name"
-                              - exact: "x-supervisor-id"
-                              - exact: "content-type"
+                      grpc_service:
+                        envoy_grpc:
+                          cluster_name: opa_grpc
+                        timeout: 5s
                       failure_mode_allow: false
-                      status_on_error:
-                        code: 503
+                      with_request_body:
+                        max_request_bytes: 8192
+                        allow_partial_message: true
                   
                   - name: envoy.filters.http.router
                     typed_config:
@@ -81,38 +73,43 @@ static_resources:
               common_tls_context:
                 tls_certificates:
                   - certificate_chain:
-                      filename: /etc/envoy/certs/airline-mcp-cert.pem
+                      filename: /etc/envoy/certs/car-rental-mcp-cert.pem
                     private_key:
-                      filename: /etc/envoy/certs/airline-mcp-key.pem
+                      filename: /etc/envoy/certs/car-rental-mcp-key.pem
                 validation_context:
                   trusted_ca:
                     filename: /etc/envoy/certs/ca-cert.pem
 
   clusters:
-    - name: airline_mcp_local
+    - name: car_rental_mcp_local
       type: STRICT_DNS
       lb_policy: ROUND_ROBIN
       connect_timeout: 5s
       load_assignment:
-        cluster_name: airline_mcp_local
+        cluster_name: car_rental_mcp_local
         endpoints:
           - lb_endpoints:
               - endpoint:
                   address:
                     socket_address:
-                      address: airline-mcp
-                      port_value: 8010
+                      address: car-rental-mcp
+                      port_value: 8012
     
-    - name: opa_cluster
+    - name: opa_grpc
       type: STRICT_DNS
       lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
       connect_timeout: 2s
       load_assignment:
-        cluster_name: opa_cluster
+        cluster_name: opa_grpc
         endpoints:
           - lb_endpoints:
               - endpoint:
                   address:
                     socket_address:
                       address: opa
-                      port_value: 8181
+                      port_value: 9191

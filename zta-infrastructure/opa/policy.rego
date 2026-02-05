@@ -1,10 +1,10 @@
 # =============================================================================
-# ZTA Policy Decision Point (PDP) - OPA Rego Policies v2
+# ZTA Policy for Envoy ext_authz gRPC Integration
 # =============================================================================
-# Simplified policy for initial testing - allows health checks and basic routing
+# OPA's envoy plugin expects package "envoy.authz" with rule "allow"
 # =============================================================================
 
-package zta.authz
+package envoy.authz
 
 import future.keywords.if
 import future.keywords.in
@@ -13,7 +13,7 @@ import future.keywords.in
 default allow := false
 
 # =============================================================================
-# Agent Identity Registry
+# Agent Registry
 # =============================================================================
 
 agent_registry := {
@@ -23,94 +23,92 @@ agent_registry := {
     },
     "airline-agent": {
         "type": "worker",
+        "domain": "airline",
         "allowed_targets": ["airline-mcp"]
     },
     "hotel-agent": {
         "type": "worker",
+        "domain": "hotel",
         "allowed_targets": ["hotel-mcp"]
     },
     "car-rental-agent": {
         "type": "worker",
+        "domain": "car-rental",
         "allowed_targets": ["car-rental-mcp"]
     }
+}
+
+# Hostname to service mapping
+host_to_service := {
+    "airline-mcp-envoy": "airline-mcp",
+    "hotel-mcp-envoy": "hotel-mcp",
+    "car-rental-mcp-envoy": "car-rental-mcp",
+    "airline-mcp-envoy:10000": "airline-mcp",
+    "hotel-mcp-envoy:10000": "hotel-mcp",
+    "car-rental-mcp-envoy:10000": "car-rental-mcp"
+}
+
+# =============================================================================
+# Input parsing - Envoy gRPC sends different structure
+# =============================================================================
+
+# Get headers from either HTTP or gRPC format
+headers := input.attributes.request.http.headers
+
+# Get agent ID
+agent_id := headers["x-agent-id"]
+
+# Get host
+raw_host := input.attributes.request.http.host
+
+# Get target service
+target_service := service if {
+    service := host_to_service[raw_host]
+} else := service if {
+    host_no_port := split(raw_host, ":")[0]
+    service := host_to_service[host_no_port]
+} else := raw_host
+
+# Get path
+request_path := input.attributes.request.http.path
+
+# =============================================================================
+# Helper checks
+# =============================================================================
+
+is_health_check if {
+    request_path == "/health"
+}
+
+is_tool_discovery if {
+    request_path == "/tools"
+}
+
+is_registered_agent if {
+    agent_registry[agent_id]
+}
+
+target_is_allowed if {
+    agent := agent_registry[agent_id]
+    target_service in agent.allowed_targets
 }
 
 # =============================================================================
 # Allow Rules
 # =============================================================================
 
-# Allow all health checks (no auth needed)
+# Allow health checks
 allow if {
-    input.attributes.request.http.path == "/health"
+    is_health_check
 }
 
-# Allow tool discovery endpoints
+# Allow tool discovery
 allow if {
-    input.attributes.request.http.path == "/tools"
+    is_tool_discovery
 }
 
-# Allow identity endpoints
+# Allow registered agents calling allowed targets
 allow if {
-    input.attributes.request.http.path == "/identity"
-}
-
-# Allow if agent is in registry and target is allowed
-allow if {
-    agent_id := input.attributes.request.http.headers["x-agent-id"]
-    agent_id != null
-    agent_id in object.keys(agent_registry)
-    
-    # For now, allow all registered agents to make requests
-    # More fine-grained control can be added later
-}
-
-# Allow supervisor (travel-planner) to call any worker agent
-allow if {
-    agent_id := input.attributes.request.http.headers["x-agent-id"]
-    agent_id == "travel-planner"
-}
-
-allow if {
-    agent_id := input.attributes.request.http.headers["x-supervisor-id"]
-    agent_id == "travel-planner"
-}
-
-# Allow worker agents to call their MCP servers
-allow if {
-    agent_id := input.attributes.request.http.headers["x-agent-id"]
-    agent_id == "airline-agent"
-}
-
-allow if {
-    agent_id := input.attributes.request.http.headers["x-agent-id"]
-    agent_id == "hotel-agent"
-}
-
-allow if {
-    agent_id := input.attributes.request.http.headers["x-agent-id"]
-    agent_id == "car-rental-agent"
-}
-
-# =============================================================================
-# Deny Rules (for logging/debugging)
-# =============================================================================
-
-# Deny unknown agents (but still log them)
-deny[msg] if {
-    agent_id := input.attributes.request.http.headers["x-agent-id"]
-    agent_id != null
-    not agent_id in object.keys(agent_registry)
-    msg := sprintf("Unknown agent: %s", [agent_id])
-}
-
-# =============================================================================
-# For debugging - check what's being passed
-# =============================================================================
-
-debug := {
-    "path": input.attributes.request.http.path,
-    "method": input.attributes.request.http.method,
-    "agent_id": input.attributes.request.http.headers["x-agent-id"],
-    "supervisor_id": input.attributes.request.http.headers["x-supervisor-id"],
-    "has_headers": input.attributes.request.http.headers != null
+    is_registered_agent
+    target_is_allowed
 }

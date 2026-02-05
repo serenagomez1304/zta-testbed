@@ -1,4 +1,9 @@
-# Envoy Sidecar - Hotel MCP (mTLS Required)
+# =============================================================================
+# Envoy Sidecar - Hotel MCP (mTLS + ext_authz) - FIXED
+# =============================================================================
+# Key fix: path_prefix must end with /allow to get boolean result
+# =============================================================================
+
 admin:
   address:
     socket_address:
@@ -33,6 +38,7 @@ static_resources:
                           path: "%REQ(:PATH)%"
                           response_code: "%RESPONSE_CODE%"
                           agent_id: "%REQ(X-AGENT-ID)%"
+                
                 route_config:
                   name: inbound_route
                   virtual_hosts:
@@ -44,10 +50,47 @@ static_resources:
                           route:
                             cluster: hotel_mcp_local
                             timeout: 60s
+                
                 http_filters:
+                  # ext_authz - Ask OPA before allowing request
+                  - name: envoy.filters.http.ext_authz
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.ext_authz.v3.ExtAuthz
+                      transport_api_version: V3
+                      
+                      http_service:
+                        server_uri:
+                          uri: opa:8181
+                          cluster: opa_cluster
+                          timeout: 5s
+                        
+                        # FIXED: Query /allow to get boolean result
+                        path_prefix: "/v1/data/zta/authz/allow"
+                        
+                        authorization_request:
+                          allowed_headers:
+                            patterns:
+                              - exact: "x-agent-id"
+                              - exact: "x-agent-name"
+                              - exact: "x-supervisor-id"
+                              - exact: "content-type"
+                        
+                        authorization_response:
+                          allowed_upstream_headers:
+                            patterns:
+                              - exact: "x-authz-decision"
+                      
+                      # Deny if OPA is unreachable (fail-secure)
+                      failure_mode_allow: false
+                      
+                      status_on_error:
+                        code: 503
+                  
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+          
+          # mTLS configuration
           transport_socket:
             name: envoy.transport_sockets.tls
             typed_config:
@@ -77,3 +120,17 @@ static_resources:
                     socket_address:
                       address: hotel-mcp
                       port_value: 8011
+    
+    - name: opa_cluster
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 2s
+      load_assignment:
+        cluster_name: opa_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: opa
+                      port_value: 8181
