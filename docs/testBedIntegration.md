@@ -579,5 +579,131 @@ if __name__ == "__main__":
 19. Mixed regions: 50 concurrency, mixed cities and dates.
 20. Chaos on: 20 concurrency, 200 requests with latency injection.
 
+## Storage Layer — Persisting Test Results
+
+After every test run the test driver will write all results to a **SQLite database** (`metrics.db` by default). This makes historical data available to the monitoring plane for visualization without requiring any external infrastructure.
+
+### Why SQLite
+
+- Zero extra dependencies — Python's `sqlite3` is in the standard library.
+- File-based: easy to mount in Docker Compose or copy out of a container.
+- Queryable by the monitoring server without an ORM or heavy setup.
+
+### Database Schema
+
+Three tables are created automatically on first run via `metrics_collector.py`:
+
+#### `runs`
+Stores one row per test driver invocation.
+
+| Column | Type | Description |
+|---|---|---|
+| `run_id` | TEXT PK | UUID generated at start of `main.py` |
+| `timestamp` | TEXT | ISO-8601 datetime of run start |
+| `mode` | TEXT | `load`, `security`, or `all` |
+| `target_url` | TEXT | Primary target passed via `--target` |
+
+#### `load_results`
+Stores aggregated latency metrics for the load test phase.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `run_id` | TEXT FK → runs | Parent run |
+| `avg_ms` | REAL | Mean end-to-end latency |
+| `p50_ms` | REAL | Median latency |
+| `p95_ms` | REAL | 95th-percentile latency |
+| `p99_ms` | REAL | 99th-percentile latency |
+| `success_count` | INTEGER | Requests with 2xx status |
+| `error_count` | INTEGER | Requests with non-2xx or timeout |
+| `total_requests` | INTEGER | Total requests sent |
+
+#### `security_results`
+Stores one row per individual test case across all three security test suites.
+
+| Column | Type | Description |
+|---|---|---|
+| `id` | INTEGER PK | Auto-increment |
+| `run_id` | TEXT FK → runs | Parent run |
+| `category` | TEXT | `prompt_injection`, `intent_hijack`, `transit_trust` |
+| `test_id` | TEXT | Test case ID (e.g. `pi-001`, `tt-003`) |
+| `status` | TEXT | `PASS`, `FAIL`, or `ERROR` |
+| `tools_called` | TEXT | JSON-serialized list of tool names called |
+| `fail_reason` | TEXT | Human-readable reason for failure (nullable) |
+
+### New Module: `metrics_collector.py`
+
+A new module `tests/test-driver/metrics_collector.py` will own all DB interactions. It exposes a simple imperative API:
+
+```
+init_db(db_path)               — create schema if not exists
+record_run(run_id, mode, url)  — insert into runs
+record_load_results(run_id, d) — insert into load_results
+record_security_results(run_id, category, results)
+                               — bulk insert into security_results
+emit_summary(run_id)           — print console summary (replaces current print-only output)
+```
+
+### Planned Changes to Existing Files
+
+#### `load_test.py`
+`run_load_test()` currently prints metrics and returns `None`. It will be changed to **return a metrics dict** so `main.py` can pass it to `record_load_results()`:
+
+```python
+# planned return value
+{
+  "avg_ms": float,
+  "p50_ms": float,
+  "p95_ms": float,
+  "p99_ms": float,
+  "success_count": int,
+  "error_count": int,
+  "total_requests": int,
+}
+```
+
+The existing `print()` statements will remain so console output is unchanged.
+
+#### `security_test.py`
+All three runners currently return `None`. They will be changed to **return their `results` list**:
+- `run_prompt_injection()` → `return results`
+- `run_intent_hijack()` → `return results`
+- `run_transit_trust_tests()` → `return results`
+
+The `results` dicts already contain `id`, `status`, `tools_called`, and `fail_reason` — no structural changes needed.
+
+#### `main.py`
+A new `--db` CLI argument will be added (default: `./metrics.db`). At startup, `main.py` will:
+1. Generate a `run_id` (UUID4).
+2. Call `init_db(args.db)` and `record_run(run_id, ...)`.
+3. Receive return values from all runners.
+4. Pass results to `record_load_results()` / `record_security_results()`.
+5. Call `emit_summary(run_id)` at the end.
+
+### Docker Compose Integration
+
+The `metrics.db` file will be mounted as a shared volume so both the test driver and the monitoring server can access it:
+
+```yaml
+# in each docker-compose file (planned)
+volumes:
+  metrics_data: {}
+
+services:
+  test-driver:
+    volumes:
+      - metrics_data:/data
+    environment:
+      METRICS_DB: /data/metrics.db
+
+  monitoring:
+    volumes:
+      - metrics_data:/data
+    environment:
+      METRICS_DB: /data/metrics.db
+```
+
+---
+
 ## Summary
-The test driver plane will provide a repeatable, adversarial test harness for the ZTA multi-agent system. It ensures that both performance and policy enforcement are validated under real-world and hostile conditions, aligning with Zero Trust requirements.
+The test driver plane provides a repeatable, adversarial test harness for the ZTA multi-agent system. It validates both performance and policy enforcement under real-world and hostile conditions. All results are persisted to a SQLite database for consumption by the monitoring plane, enabling historical trend analysis and visualization without requiring any external data infrastructure.

@@ -568,7 +568,7 @@ async def chat(request: ChatRequest):
     with tracer.start_as_current_span("chat") as span:
         span.set_attribute("user_id", request.user_id)
         span.set_attribute("message", request.message[:100])
-        
+
         # 1. Get user context from Itinerary Service
         context = await get_user_context(request.user_id)
         context_used = context is not None
@@ -613,6 +613,7 @@ async def chat(request: ChatRequest):
             
             # Create trip in database
             trip = await create_trip(request.user_id, destination)
+            print(trip)
             
             if trip:
                 return ChatResponse(
